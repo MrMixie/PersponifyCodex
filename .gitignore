@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# Logs and runtime data
+*.log
+codex_queue/
+
+# Local context/transactions
+context_latest.json
+tx_update_*.json

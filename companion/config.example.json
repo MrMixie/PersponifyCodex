@@ -1,0 +1,132 @@
+{
+  "version": "1",
+  "default_adapter": "local-echo",
+  "auto_enable_local": true,
+  "adapters": [
+    {
+      "name": "local-echo",
+      "type": "echo",
+      "enabled": true,
+      "settings": {
+        "prefix": "[echo] "
+      }
+    },
+    {
+      "name": "openai-default",
+      "type": "openai",
+      "enabled": false,
+      "settings": {
+        "model": "gpt-4o-mini",
+        "base_url": "https://api.openai.com/v1"
+      }
+    },
+    {
+      "name": "openrouter-default",
+      "type": "openai",
+      "enabled": false,
+      "settings": {
+        "model": "openrouter/auto",
+        "base_url": "https://openrouter.ai/api/v1",
+        "headers": {
+          "HTTP-Referer": "https://your-domain.example",
+          "X-Title": "Studio AI"
+        }
+      }
+    },
+    {
+      "name": "groq-default",
+      "type": "openai",
+      "enabled": false,
+      "settings": {
+        "model": "llama-3.1-70b-versatile",
+        "base_url": "https://api.groq.com/openai/v1"
+      }
+    },
+    {
+      "name": "mistral-default",
+      "type": "openai",
+      "enabled": false,
+      "settings": {
+        "model": "mistral-large-latest",
+        "base_url": "https://api.mistral.ai/v1"
+      }
+    },
+    {
+      "name": "together-default",
+      "type": "openai",
+      "enabled": false,
+      "settings": {
+        "model": "meta-llama/Llama-3.1-70B-Instruct-Turbo",
+        "base_url": "https://api.together.xyz/v1"
+      }
+    },
+    {
+      "name": "anthropic-default",
+      "type": "anthropic",
+      "enabled": false,
+      "settings": {
+        "model": "claude-3-5-sonnet-20240620",
+        "base_url": "https://api.anthropic.com/v1",
+        "max_tokens": 1024
+      }
+    },
+    {
+      "name": "xai-default",
+      "type": "xai",
+      "enabled": false,
+      "settings": {
+        "model": "grok-2-latest",
+        "base_url": "https://api.x.ai/v1"
+      }
+    },
+    {
+      "name": "ollama-local",
+      "type": "ollama",
+      "enabled": true,
+      "settings": {
+        "model": "llama3.1",
+        "base_url": "http://127.0.0.1:11434"
+      }
+    },
+    {
+      "name": "lmstudio-local",
+      "type": "openai",
+      "enabled": true,
+      "settings": {
+        "model": "local-model",
+        "base_url": "http://127.0.0.1:1234/v1",
+        "require_api_key": false
+      }
+    },
+    {
+      "name": "llamacpp-local",
+      "type": "openai",
+      "enabled": true,
+      "settings": {
+        "model": "local-model",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "require_api_key": false
+      }
+    },
+    {
+      "name": "vllm-local",
+      "type": "openai",
+      "enabled": true,
+      "settings": {
+        "model": "local-model",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "require_api_key": false
+      }
+    },
+    {
+      "name": "textgen-local",
+      "type": "openai",
+      "enabled": true,
+      "settings": {
+        "model": "local-model",
+        "base_url": "http://127.0.0.1:5000/v1",
+        "require_api_key": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Persponify Companion Config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "string", "default": "1" },
+    "default_adapter": { "type": ["string", "null"] },
+    "adapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "enabled": { "type": "boolean", "default": true },
+          "settings": { "type": "object", "default": {} }
+        },
+        "required": ["name", "type"]
+      },
+      "default": []
+    }
+  },
+  "required": ["adapters"]
+}

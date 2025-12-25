@@ -1,0 +1,43 @@
+Persponify Codex — Local Studio Companion (CLI‑First)
+
+Persponify Codex connects Roblox Studio to a local Codex workflow.
+The plugin applies changes; the chat lives in the Codex CLI.
+
+Setup (Plugin‑First):
+1) Install this plugin.
+2) Download the PersponifyCodex repo from GitHub.
+3) Run the launcher (starts the local server).
+4) In Studio, open the plugin and click Connect.
+5) Register the MCP server (one‑time), then run Codex (see below).
+
+How to connect the Codex CLI (recommended):
+1) Launcher on (server on 127.0.0.1:3030).
+2) Plugin connected in Studio.
+3) Register the MCP server (one‑time):
+   `codex mcp add persponify --url http://127.0.0.1:3030/mcp`
+4) Run Codex in the repo (so it reads `AGENTS.md` + `STUDIO_GRADE_PROMPT.md`):
+   - Option A: `cd /path/to/PersponifyCodex` then `codex`
+   - Option B: `codex -C /path/to/PersponifyCodex`
+     (Windows: `codex -C C:\Path\To\PersponifyCodex`)
+5) First message: type `sync context`.
+6) Chat there; Codex enqueues actions and the plugin applies them automatically.
+
+Notes:
+- If you move the repo, re‑run `codex mcp remove persponify` and add it again.
+- Verify registration with `codex mcp list`.
+- Codex CLI is installed globally; no need to copy it into this repo.
+- Optional legacy wrapper: `python3 persponify_cli.py`
+- Automatic option: click "Register Codex" in the launcher to auto-register MCP.
+- If Codex says “NoContext,” type `sync context` again; it will request a fresh export.
+ - Legacy stdio MCP: `codex mcp add persponify -- python3 -u /path/to/PersponifyCodex/persponify_mcp_server.py`
+
+Requirements:
+- Roblox Studio
+- Python 3.9+ (3.11 recommended)
+- Codex CLI (official) + `codex login`
+
+Notes:
+- Local‑only (127.0.0.1:3030). No external hosting required.
+- Keep Codex permissions minimal; allow only the repo folder unless needed.
+- Run `codex` from inside the repo so it can read `AGENTS.md` and `STUDIO_GRADE_PROMPT.md`.
+ - If `python3` is older, install a newer 3.x for the server/launcher.

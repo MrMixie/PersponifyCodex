@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex Response",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "jobId": {"type": "string"},
+    "ok": {"type": "boolean"},
+    "summary": {"type": "string"},
+    "plan": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "actions": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "notes": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "errors": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "transactionId": {"type": "string"},
+    "riskScore": {"type": "number"},
+    "risk": {"type": "number"},
+    "risk_score": {"type": "number"}
+  },
+  "required": ["jobId", "actions"]
+}
