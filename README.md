@@ -111,5 +111,13 @@ permission scope. Recommended:
 - `persponify_cli.py` → optional legacy wrapper
 - `STUDIO_GRADE_PROMPT.md` → studio‑grade operating guide
 
+## Support & Issues
+Open issues on GitHub: https://github.com/MrMixie/PersponifyCodex/issues
+
+## Versioning & Updates
+- Repo releases use semantic tags (example: `v0.1.0`).
+- Plugin builds use a date-based build id; publish the plugin and tag the repo together.
+- For download-only users, attach a ZIP to each GitHub release.
+
 ## License
 MIT. See `LICENSE`.

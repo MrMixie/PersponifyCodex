@@ -45,3 +45,5 @@ Notes:
 - Run `codex` from inside the repo so it can read `AGENTS.md` and `STUDIO_GRADE_PROMPT.md`.
  - If `python3` is older, install a newer 3.x for the server/launcher.
  - License: MIT (see repo).
+ - Support: search GitHub for "PersponifyCodex" and open an issue.
+ - Updates: check the repo Releases for the latest version.
