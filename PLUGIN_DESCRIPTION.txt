@@ -3,6 +3,9 @@ Persponify Codex — Local Studio Companion (CLI‑First)
 Persponify Codex connects Roblox Studio to a local Codex workflow.
 The plugin applies changes; the chat lives in the Codex CLI.
 
+Get the companion repo:
+https://github.com/MrMixie/PersponifyCodex
+
 Setup (Plugin‑First):
 1) Install this plugin.
 2) Download the PersponifyCodex repo from GitHub.
@@ -41,3 +44,4 @@ Notes:
 - Keep Codex permissions minimal; allow only the repo folder unless needed.
 - Run `codex` from inside the repo so it can read `AGENTS.md` and `STUDIO_GRADE_PROMPT.md`.
  - If `python3` is older, install a newer 3.x for the server/launcher.
+ - License: MIT (see repo).

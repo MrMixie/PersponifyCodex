@@ -4,9 +4,11 @@ Persponify Codex is a local‑only bridge between Roblox Studio and the Codex CL
 The Studio plugin applies changes from the server, while **all chat + planning
 happens in the CLI**.
 
+GitHub: https://github.com/MrMixie/PersponifyCodex
+
 ## What You Install
 1) **Roblox Studio plugin** (Persponify Codex)  
-2) **Local companion repo** (this folder)  
+2) **Local companion repo** (this folder, from GitHub)  
 3) **Codex CLI** (official Codex app/CLI; sign in to your account)
 
 ## Recommended Location (Repo)
@@ -21,9 +23,16 @@ config directory:
 - Windows: `%APPDATA%\\PersponifyCodex\\launcher.json`
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/PersponifyCodex/launcher.json`
 
+## Setup Matrix (TL;DR)
+| You already have | Do this next | Then | Finish |
+| --- | --- | --- | --- |
+| Plugin installed | Download repo from GitHub | Start launcher | Connect plugin, register MCP, run Codex |
+| Repo downloaded | Start launcher | Install/enable plugin | Connect plugin, register MCP, run Codex |
+| Codex CLI ready | Download repo + install plugin | Start launcher | Connect plugin, register MCP, run Codex |
+
 ## Quick Start (Plugin‑First)
 1) Buy/install the **Persponify Codex** plugin in Roblox Studio.
-2) Download this repo (GitHub) to a folder you choose.
+2) Download this repo from GitHub to a folder you choose.
 3) Start the launcher:
    - macOS: open `PersponifyCodexLauncher.app`
    - Or: `python3 codex_launcher.py`
@@ -101,3 +110,6 @@ permission scope. Recommended:
 - `persponify_mcp_server.py` → MCP server for Codex tool calls (legacy stdio fallback)
 - `persponify_cli.py` → optional legacy wrapper
 - `STUDIO_GRADE_PROMPT.md` → studio‑grade operating guide
+
+## License
+MIT. See `LICENSE`.
