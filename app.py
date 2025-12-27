@@ -315,8 +315,15 @@ CONTEXT_EXPORT_MIN_INTERVAL_SEC = float(os.environ.get("PERSPONIFY_CONTEXT_MIN_I
 CODEX_MAX_RISK = float(os.environ.get("PERSPONIFY_CODEX_MAX_RISK", "0.7"))
 MAX_QUEUE_SIZE = int(os.environ.get("PERSPONIFY_MAX_QUEUE", "1000"))
 AUDIT_LEDGER_LIMIT = int(os.environ.get("PERSPONIFY_AUDIT_LEDGER_LIMIT", "200"))
+CODEX_PACKS_ENABLED = os.environ.get("PERSPONIFY_CODEX_PACKS_ENABLED", "1") != "0"
+CODEX_PACK_MAX_ITEMS = int(os.environ.get("PERSPONIFY_CODEX_PACK_MAX_ITEMS", "40"))
+CODEX_PACK_MAX_EDGES = int(os.environ.get("PERSPONIFY_CODEX_PACK_MAX_EDGES", "200"))
+CODEX_PACK_MAX_REQUIRES = int(os.environ.get("PERSPONIFY_CODEX_PACK_MAX_REQUIRES", "8"))
+CODEX_PACK_MAX_SNAPSHOTS = int(os.environ.get("PERSPONIFY_CODEX_PACK_MAX_SNAPSHOTS", "12"))
+CODEX_SCRIPT_INDEX_MAX = int(os.environ.get("PERSPONIFY_CODEX_SCRIPT_INDEX_MAX", "200"))
 SEMANTIC_ENABLED = os.environ.get("PERSPONIFY_SEMANTIC_ENABLED", "1") != "0"
 SEMANTIC_KEYWORD_LIMIT = int(os.environ.get("PERSPONIFY_SEMANTIC_KEYWORD_LIMIT", "20"))
+SEMANTIC_SYMBOL_LIMIT = int(os.environ.get("PERSPONIFY_SEMANTIC_SYMBOL_LIMIT", "40"))
 SEMANTIC_MAX_REQUIRES = int(os.environ.get("PERSPONIFY_SEMANTIC_MAX_REQUIRES", "30"))
 SEMANTIC_MAX_SERVICES = int(os.environ.get("PERSPONIFY_SEMANTIC_MAX_SERVICES", "30"))
 SEMANTIC_MAX_SOURCE_BYTES = int(os.environ.get("PERSPONIFY_SEMANTIC_MAX_SOURCE_BYTES", "200000"))
@@ -772,6 +779,7 @@ SEMANTIC_STOPWORDS = {
 RE_REQUIRE = re.compile(r"\brequire\s*\(\s*([^\)]+?)\s*\)", re.IGNORECASE)
 RE_SERVICE = re.compile(r"GetService\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 RE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+RE_FUNCTION_DEF = re.compile(r"\bfunction\s+([A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)*)")
 
 def _extract_services(source: Optional[str]) -> List[str]:
     if not source:
@@ -813,6 +821,22 @@ def _extract_keywords(source: Optional[str]) -> List[str]:
         counts[lowered] = counts.get(lowered, 0) + 1
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return [token for token, _ in ranked[:SEMANTIC_KEYWORD_LIMIT]]
+
+def _extract_symbol_lines(source: Optional[str]) -> List[Dict[str, Any]]:
+    if not source:
+        return []
+    seen = set()
+    symbols: List[Dict[str, Any]] = []
+    for idx, line in enumerate(source.splitlines(), start=1):
+        for match in RE_FUNCTION_DEF.finditer(line):
+            name = match.group(1)
+            if not name or name in seen:
+                continue
+            symbols.append({"name": name, "line": idx})
+            seen.add(name)
+            if len(symbols) >= SEMANTIC_SYMBOL_LIMIT:
+                return symbols
+    return symbols
 
 def _semantic_tags_for_script(path: str, class_name: Optional[str], source: Optional[str], services: List[str]) -> List[str]:
     tags: set = set()
@@ -891,33 +915,46 @@ def _build_semantic_entry(script: Dict[str, Any]) -> Dict[str, Any]:
     requires = _extract_requires(source)
     keywords = _extract_keywords(source)
     tags = _semantic_tags_for_script(path, class_name, source, services)
+    symbol_lines = _extract_symbol_lines(source)
+    symbols = [item["name"] for item in symbol_lines]
+    fingerprint = _script_fingerprint(script)
+    line_count = None
+    if isinstance(source, str) and source != "":
+        line_count = source.count("\n") + 1
 
     return {
         "path": path,
         "className": class_name,
         "sha1": script.get("sha1"),
         "bytes": script.get("bytes"),
+        "fingerprint": fingerprint,
         "tags": tags,
         "services": services,
         "requires": requires,
         "keywords": keywords,
+        "symbols": symbols,
+        "symbolLines": symbol_lines,
+        "lineCount": line_count,
     }
 
 def _summarize_semantic(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     tag_counts: Dict[str, int] = {}
     service_counts: Dict[str, int] = {}
     requires_count = 0
+    symbol_count = 0
     for entry in entries:
         for tag in entry.get("tags") or []:
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
         for service in entry.get("services") or []:
             service_counts[service] = service_counts.get(service, 0) + 1
         requires_count += len(entry.get("requires") or [])
+        symbol_count += len(entry.get("symbols") or [])
     return {
         "scriptCount": len(entries),
         "tagCounts": tag_counts,
         "serviceCounts": service_counts,
         "requiresCount": requires_count,
+        "symbolCount": symbol_count,
     }
 
 def _build_context_semantic(context: Optional[Dict[str, Any]], context_id: str, version: int) -> Dict[str, Any]:
@@ -935,6 +972,207 @@ def _build_context_semantic(context: Optional[Dict[str, Any]], context_id: str, 
         "updatedAt": _now(),
         "summary": summary,
         "scripts": {entry["path"]: entry for entry in entries if entry.get("path")},
+    }
+
+def _normalize_text(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    lowered = str(text).lower()
+    for ch in ("\n", "\r", "\t"):
+        lowered = lowered.replace(ch, " ")
+    return lowered
+
+def _classify_prompt(prompt: Optional[str], script_count: int) -> str:
+    text = _normalize_text(prompt)
+    if text:
+        rollback_kw = ("rollback", "revert", "restore", "old version", "previous version", "start over", "restart")
+        refactor_kw = ("refactor", "rework", "rewrite", "overhaul", "architecture", "breaking change")
+        review_kw = ("review", "audit", "analyze", "assessment", "check", "feedback", "thoughts")
+        continue_kw = ("continue", "finish", "next", "direction", "roadmap", "ideas")
+        if any(k in text for k in rollback_kw):
+            return "rollback"
+        if any(k in text for k in refactor_kw):
+            return "refactor"
+        if any(k in text for k in review_kw):
+            return "review"
+        if any(k in text for k in continue_kw):
+            return "continue"
+    if script_count <= 0:
+        return "greenfield"
+    return "general"
+
+def _build_script_index(
+    context: Optional[Dict[str, Any]],
+    semantic: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not context:
+        return {"scripts": [], "truncated": False}
+    scripts = context.get("scripts", []) or []
+    semantic_map = semantic.get("scripts") if isinstance(semantic, dict) else {}
+    items: List[Dict[str, Any]] = []
+    for script in scripts:
+        if not isinstance(script, dict):
+            continue
+        path = script.get("path")
+        if not path:
+            continue
+        entry = semantic_map.get(path) if isinstance(semantic_map, dict) else {}
+        symbols = entry.get("symbols") if isinstance(entry, dict) else None
+        items.append({
+            "path": path,
+            "className": script.get("className"),
+            "bytes": script.get("bytes"),
+            "lineCount": entry.get("lineCount") if isinstance(entry, dict) else None,
+            "tags": entry.get("tags") if isinstance(entry, dict) else None,
+            "symbolCount": len(symbols) if isinstance(symbols, list) else 0,
+            "fingerprint": entry.get("fingerprint") if isinstance(entry, dict) else _script_fingerprint(script),
+            "hasSource": script.get("source") is not None,
+        })
+    items.sort(key=lambda item: item.get("path") or "")
+    truncated = False
+    if len(items) > CODEX_SCRIPT_INDEX_MAX:
+        items = items[:CODEX_SCRIPT_INDEX_MAX]
+        truncated = True
+    return {"scripts": items, "truncated": truncated}
+
+def _build_dependency_index(semantic: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not semantic or not isinstance(semantic, dict):
+        return {"nodes": [], "truncated": False}
+    entries = semantic.get("scripts") or {}
+    if not isinstance(entries, dict):
+        return {"nodes": [], "truncated": False}
+    nodes: List[Dict[str, Any]] = []
+    edge_count = 0
+    truncated = False
+    for path in sorted(entries.keys()):
+        entry = entries.get(path)
+        if not isinstance(entry, dict):
+            continue
+        requires = entry.get("requires") or []
+        if not isinstance(requires, list) or not requires:
+            continue
+        reqs = [str(item) for item in requires if item]  # preserve raw form
+        total = len(reqs)
+        if total > CODEX_PACK_MAX_REQUIRES:
+            reqs = reqs[:CODEX_PACK_MAX_REQUIRES]
+        nodes.append({
+            "path": path,
+            "requires": reqs,
+            "requiresCount": total,
+        })
+        edge_count += len(reqs)
+        if len(nodes) >= CODEX_PACK_MAX_ITEMS or edge_count >= CODEX_PACK_MAX_EDGES:
+            truncated = True
+            break
+    return {"nodes": nodes, "truncated": truncated}
+
+def _build_hotspots(script_index: Dict[str, Any]) -> Dict[str, Any]:
+    scripts = script_index.get("scripts") if isinstance(script_index, dict) else None
+    if not isinstance(scripts, list) or not scripts:
+        return {}
+    def _metric(item: Dict[str, Any], key: str) -> int:
+        value = item.get(key)
+        return int(value) if isinstance(value, int) else 0
+    by_bytes = sorted(scripts, key=lambda item: _metric(item, "bytes"), reverse=True)[:10]
+    by_symbols = sorted(scripts, key=lambda item: _metric(item, "symbolCount"), reverse=True)[:10]
+    def _trim(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        trimmed = []
+        for item in items:
+            trimmed.append({
+                "path": item.get("path"),
+                "bytes": item.get("bytes"),
+                "lineCount": item.get("lineCount"),
+                "symbolCount": item.get("symbolCount"),
+            })
+        return trimmed
+    return {
+        "largestScripts": _trim(by_bytes),
+        "mostSymbols": _trim(by_symbols),
+    }
+
+def _build_delta_summary(delta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(delta, dict):
+        return {}
+    summary: Dict[str, Any] = {}
+    for key in ("scriptsChanged", "scriptsAdded", "scriptsRemoved"):
+        items = delta.get(key)
+        if isinstance(items, list) and items:
+            summary[key] = items[:CODEX_PACK_MAX_ITEMS]
+            summary[f"{key}Truncated"] = len(items) > CODEX_PACK_MAX_ITEMS
+    return summary
+
+def _build_analysis_pack(
+    context: Optional[Dict[str, Any]],
+    semantic: Optional[Dict[str, Any]],
+    delta: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not context:
+        return {}
+    script_index = _build_script_index(context, semantic)
+    dependencies = _build_dependency_index(semantic)
+    hotspots = _build_hotspots(script_index)
+    missing_sources = []
+    scripts = context.get("scripts", []) or []
+    for script in scripts:
+        if not isinstance(script, dict):
+            continue
+        if script.get("source") is None and script.get("path"):
+            missing_sources.append(script.get("path"))
+            if len(missing_sources) >= CODEX_PACK_MAX_ITEMS:
+                break
+    return {
+        "scriptIndex": script_index,
+        "dependencies": dependencies,
+        "hotspots": hotspots,
+        "delta": _build_delta_summary(delta),
+        "missingSources": missing_sources,
+    }
+
+def _build_blueprint_pack(script_count: int) -> Dict[str, Any]:
+    return {
+        "scriptCount": script_count,
+        "hasScripts": script_count > 0,
+        "starterChecklist": [
+            "Define the core loop and player goals.",
+            "Map the main systems and data flow.",
+            "Draft the folder/module layout.",
+            "Plan UI/UX surfaces and feedback.",
+            "Decide on persistence and safety constraints.",
+        ],
+    }
+
+def _build_rollback_pack(pid: int, sid: str, project_key: str) -> Dict[str, Any]:
+    context_id = _context_id(pid, sid, project_key)
+    records = _read_tail_jsonl(CONTEXT_EVENTS_PATH, CODEX_PACK_MAX_SNAPSHOTS * 5)
+    snapshots: List[Dict[str, Any]] = []
+    for record in reversed(records):
+        if not isinstance(record, dict):
+            continue
+        if record.get("event") != "export":
+            continue
+        if record.get("contextId") != context_id:
+            continue
+        snapshots.append({
+            "contextVersion": record.get("contextVersion"),
+            "ts": record.get("ts"),
+            "treeCount": record.get("treeCount"),
+            "scriptCount": record.get("scriptCount"),
+            "delta": record.get("delta"),
+        })
+        if len(snapshots) >= CODEX_PACK_MAX_SNAPSHOTS:
+            break
+    return {
+        "contextId": context_id,
+        "snapshots": snapshots,
+    }
+
+def _build_refactor_pack() -> Dict[str, Any]:
+    return {
+        "guidance": [
+            "Map entry points and dependencies before changing behavior.",
+            "Plan a migration path (compat layer or staged rollout).",
+            "Apply edits in small steps with expectedHash checks.",
+        ],
     }
 
 def _ensure_semantic_cache(pid: int, sid: str, project_key: str, context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1040,6 +1278,50 @@ def _lookup_script_hash(context: Optional[Dict[str, Any]], path: str) -> Optiona
             return _script_fingerprint(s)
     return None
 
+def _should_request_resync(errors: Optional[List[Any]]) -> bool:
+    if not errors:
+        return False
+    for err in errors:
+        if not isinstance(err, str):
+            continue
+        lowered = err.lower()
+        if "expectedhash mismatch" in lowered or "expectedhash provided but no cached hash" in lowered:
+            return True
+    return False
+
+def _queue_context_export_request(
+    pid: int,
+    sid: str,
+    project_key: str,
+    reason: Optional[str] = None,
+) -> bool:
+    with _cv:
+        if _primary_place_id is None or _primary_session_id is None:
+            return False
+        try:
+            _require_primary_scope(int(pid), str(sid))
+        except HTTPException:
+            return False
+        request_payload: Dict[str, Any] = {
+            "requestedAt": _now(),
+            "projectKey": str(project_key),
+            "includeSources": True,
+            "mode": "full",
+        }
+        if reason:
+            request_payload["reason"] = str(reason)
+        _context_export_requests[(int(pid), str(sid))] = request_payload
+    _audit_event(
+        "context_request",
+        {
+            "placeId": int(pid),
+            "studioSessionId": str(sid),
+            "projectKey": str(project_key),
+            "reason": reason or "",
+        },
+    )
+    return True
+
 def _truncate_source_bytes(text: str, limit: int) -> Tuple[str, bool]:
     if limit <= 0:
         return "", True
@@ -1076,15 +1358,21 @@ def _build_focus_pack(context: Optional[Dict[str, Any]], delta: Optional[Dict[st
             source = s.get("source")
             preview = None
             trimmed = False
+            line_count = None
             if isinstance(source, str):
                 preview, trimmed = _truncate_source_bytes(source, CODEX_FOCUS_MAX_BYTES)
+                if source != "":
+                    line_count = source.count("\n") + 1
             picked.append({
                 "path": s.get("path"),
                 "className": s.get("className"),
                 "bytes": s.get("bytes"),
                 "sha1": s.get("sha1"),
+                "fingerprint": _script_fingerprint(s),
                 "sourcePreview": preview,
                 "previewTruncated": trimmed,
+                "sourceIsFull": (preview is not None and trimmed is False),
+                "lineCount": line_count,
             })
             break
 
@@ -1554,6 +1842,8 @@ def _process_codex_response(job_id: str, data: Dict[str, Any], resp_path: Option
     context = _get_cached_context(int(pid), str(sid), str(project_key))
     validation_errors = _validate_codex_actions(actions, context)
     if validation_errors:
+        if _should_request_resync(validation_errors):
+            _queue_context_export_request(int(pid), str(sid), str(project_key), reason="expectedHash mismatch")
         msg = "Codex action validation failed"
         detail = {"errors": validation_errors}
         _record_codex_error(job_id, msg, detail)
@@ -2798,6 +3088,19 @@ def codex_job(inp: CodexJobIn):
             scripts = context.get("scripts", []) or []
             missing = [s.get("path") for s in scripts if s.get("source") is None]
 
+        script_count = len(context.get("scripts", []) or []) if context else 0
+        scenario = _classify_prompt(inp.prompt, script_count)
+        packs: Dict[str, Any] = {}
+        if CODEX_PACKS_ENABLED:
+            if scenario in {"review", "continue", "refactor", "general"}:
+                packs["analysis"] = _build_analysis_pack(context, semantic, delta)
+            if scenario == "rollback":
+                packs["rollback"] = _build_rollback_pack(int(pid), str(sid), str(project_key))
+            if scenario == "greenfield":
+                packs["blueprint"] = _build_blueprint_pack(script_count)
+            if scenario == "refactor":
+                packs["refactor"] = _build_refactor_pack()
+
         created_at = _now()
         job = {
             "jobId": str(uuid.uuid4()),
@@ -2823,6 +3126,8 @@ def codex_job(inp: CodexJobIn):
                 "focus": focus_pack,
                 "semantic": (semantic.get("summary") if semantic else None),
                 "focusSemantic": (focus_semantic or None),
+                "scenario": scenario,
+                "packs": packs or None,
             },
             "contextRef": {
                 "path": str(_context_file_path(context_id)),

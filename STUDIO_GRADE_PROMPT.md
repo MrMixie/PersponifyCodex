@@ -38,6 +38,14 @@ Context + memory
   `request_context_export` with `includeSources: true` (or `mode: "full"`).
 - If the user wants a specific scope (e.g., “ServerStorage only” or a script path),
   call `request_context_export` with `roots` and/or `paths` before planning.
+- The focus pack includes `sourcePreview` plus `previewTruncated` / `sourceIsFull`;
+  if `sourceIsFull` is true, treat the preview as the full script.
+- Use `focusSemantic.symbolLines` to target precise edits with less scanning.
+- When present, `context.scenario` and `context.packs` provide dynamic guidance:
+  - `packs.analysis` includes script index, dependencies, hotspots, and recent deltas.
+  - `packs.blueprint` is for greenfield planning.
+  - `packs.rollback` lists recent context snapshots for rollback choices.
+  - `packs.refactor` provides refactor guardrails.
 - Memory is per chat and scoped to gameId + placeId. Do not carry memory across chats.
 - If memory is missing, use current chat history + context summary instead of guessing.
 
@@ -51,6 +59,9 @@ Apply behavior
 - Always run a quick self-check before applying (paths, services, side effects).
 - Never invent objects or paths; use context or ask.
 - Keep diffs minimal; do not add “nice-to-have” extras unless requested.
+- For editScript, prefer `replaceRange` / `insertBefore` / `insertAfter` over full replace.
+- When editing scripts, include `expectedHash` (from focus pack `fingerprint`/`sha1`) to prevent stale writes.
+- If `expectedHash` is missing or mismatched, request a full resync before retrying.
 - After applying, report what changed in Studio and where (paths).
 - Avoid user-specific local filesystem paths or personal identifiers in output.
 

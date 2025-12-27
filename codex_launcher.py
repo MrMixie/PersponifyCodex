@@ -2228,6 +2228,31 @@ def _run_gui() -> int:
         lines.append(f"Memory: {memory_var.get()} | Scope: {scope_var.get()}")
         append_chat("system", "\n".join(lines))
 
+    def request_resync() -> None:
+        def _notify(message: str, ok: bool = True) -> None:
+            if CHAT_ENABLED:
+                append_chat("system", message)
+            elif ok:
+                messagebox.showinfo("Persponify Codex", message)
+            else:
+                messagebox.showerror("Persponify Codex", message)
+
+        status = _fetch_json("/status")
+        primary = status.get("primary") if isinstance(status, dict) else None
+        alive = primary.get("alive") is True if isinstance(primary, dict) else False
+        if not alive:
+            _notify("Connect the plugin first, then retry Resync.", ok=False)
+            return
+        summary = _fetch_json("/context/summary")
+        payload = {"mode": "full", "includeSources": True}
+        if isinstance(summary, dict) and summary.get("projectKey"):
+            payload["projectKey"] = summary["projectKey"]
+        res = _post_json("/context/request", payload, timeout=4.0)
+        if res and res.get("ok"):
+            _notify("Resync requested. Watch Studio logs for the export.")
+        else:
+            _notify(f"Resync failed: {res or 'server unavailable'}", ok=False)
+
     def send_feedback(args: list) -> None:
         if not args:
             append_chat("system", "Usage: /feedback <score> [note] OR /feedback <adapter> <score> [note]")
@@ -2283,6 +2308,9 @@ def _run_gui() -> int:
         if cmd == "/status":
             show_status()
             return True
+        if cmd == "/resync":
+            request_resync()
+            return True
         if cmd == "/feedback":
             send_feedback(args)
             return True
@@ -2322,7 +2350,7 @@ def _run_gui() -> int:
         if cmd == "/help":
             append_chat(
                 "system",
-                "Commands: /status, /models, /feedback, /chat, /rollback, /history, /help",
+                "Commands: /status, /resync, /models, /feedback, /chat, /rollback, /history, /help",
             )
             return True
         return False
@@ -2736,6 +2764,9 @@ def _run_gui() -> int:
             messagebox.showerror("Persponify Codex", f"Server restart failed: {exc}")
         refresh_labels()
 
+    def on_resync() -> None:
+        request_resync()
+
     set_repo = action_button(
         button_row,
         "Set Repo…",
@@ -2768,6 +2799,17 @@ def _run_gui() -> int:
         THEME["panel"],
     )
     restart_server_btn.pack(side="left", padx=(8, 0))
+
+    resync_btn = action_button(
+        button_row,
+        "Resync",
+        on_resync,
+        THEME["panel"],
+        THEME["text"],
+        THEME["green"],
+        THEME["panel"],
+    )
+    resync_btn.pack(side="left", padx=(8, 0))
 
     def on_register_mcp() -> None:
         _register_mcp(repo_display, show_dialog=True)
