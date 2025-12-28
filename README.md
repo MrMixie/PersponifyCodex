@@ -6,6 +6,9 @@ happens in the CLI**.
 
 GitHub: https://github.com/MrMixie/PersponifyCodex
 
+Note: This repo contains the local server + launcher only. Studio plugin scripts
+and context exports stay local and are not stored here.
+
 ## What You Install
 1) **Roblox Studio plugin** (Persponify Codex)  
 2) **Local companion repo** (this folder, from GitHub)  
@@ -97,8 +100,18 @@ permission scope. Recommended:
 - New chat tip: start with “sync context” — Codex should call `get_status` and
   `get_context_summary` automatically and summarize the Studio state.
 
+## Capabilities (Server + Plugin)
+- Local-only connection with primary/standby leases and heartbeats.
+- Transaction apply: create/move/rename/delete (guarded), set properties/attributes,
+  edit scripts (replace/append/prepend/replaceRange/insertBefore/insertAfter), chunked payloads.
+- Context export: diff/full, scoped roots/paths, missing-source tracking, semantic tags/deps.
+- Context payload flags: `sourceTruncated` per script; summary fields `truncatedBySize`,
+  `attributesIncluded`, `tagsIncluded`.
+- Codex packs: focus pack with `sourceIsFull` + `previewTruncated`, analysis pack
+  (deps/hotspots), rollback snapshots, blueprint/refactor helpers.
+
 ## Release ZIP (Dev Shortcut)
-- `python3 scripts/release_zip.py --upload --tag v0.3.1` (build + upload ZIP, creates the release if missing)
+- `python3 scripts/release_zip.py --upload --tag vX.Y.Z` (build + upload ZIP, creates the release if missing; token required)
 
 ## Troubleshooting
 - Plugin says **offline**: launcher is not running, or port `3030` is blocked.

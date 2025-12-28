@@ -11,6 +11,22 @@
       "type": "array",
       "items": {"type": "string"}
     },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "actions": {
+            "type": "array",
+            "items": {"type": "object"}
+          }
+        },
+        "required": ["id", "title", "actions"]
+      }
+    },
     "actions": {
       "type": "array",
       "items": {"type": "object"}

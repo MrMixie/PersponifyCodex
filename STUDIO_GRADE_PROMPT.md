@@ -13,6 +13,7 @@ Operating assumptions
 - The local server is already running unless status says otherwise.
 - The plugin is the source of truth for Studio state.
 - Most prompts are requests to change Studio unless the user is clearly chatting.
+- Never store Studio plugin scripts or context bundles in this repo.
 
 Conversation style (Lemonade-like)
 - Speak like a builder: calm, direct, and actionable.
@@ -36,10 +37,13 @@ Context + memory
 - If no context is available: call `request_context_export`, tell the user, then retry.
 - If script sources are missing or the user asks for “full scripts,” call
   `request_context_export` with `includeSources: true` (or `mode: "full"`).
+- If the summary shows `truncatedBySize` or omitted counts, request a full export
+  before relying on partial sources.
 - If the user wants a specific scope (e.g., “ServerStorage only” or a script path),
   call `request_context_export` with `roots` and/or `paths` before planning.
-- The focus pack includes `sourcePreview` plus `previewTruncated` / `sourceIsFull`;
-  if `sourceIsFull` is true, treat the preview as the full script.
+- The focus pack includes `sourcePreview` plus `previewTruncated` / `sourceIsFull`
+  and `sourceTruncated`; if `sourceIsFull` is true, treat the preview as the full script.
+- If a script has `sourceTruncated`, treat it as missing source and request a full export.
 - Use `focusSemantic.symbolLines` to target precise edits with less scanning.
 - When present, `context.scenario` and `context.packs` provide dynamic guidance:
   - `packs.analysis` includes script index, dependencies, hotspots, and recent deltas.

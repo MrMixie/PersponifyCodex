@@ -63,7 +63,7 @@ from pydantic import BaseModel, Field
 from companion.service import HeadlessService
 from mcp_common import handle_request as mcp_handle_request
 
-APP_VERSION = "2025.12.28"
+APP_VERSION = "0.1.5"
 PROTOCOL_VERSION = 1
 DEFAULT_CHUNK_SIZE = 60000
 DEFAULT_COMPANION_CONFIG = "companion/config.example.json"
@@ -144,6 +144,9 @@ class ContextScriptItem(BaseModel):
     sha1: Optional[str] = None
     bytes: Optional[int] = None
     source: Optional[str] = None  # optionally omitted for large scripts
+    sourceTruncated: Optional[bool] = None
+    attributes: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
 
 class ContextExportIn(BaseModel):
     projectKey: str = "default"
@@ -720,6 +723,9 @@ def _build_context_summary(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         summary["omittedBySize"] = meta.get("omittedBySize")
         summary["omittedByTotal"] = meta.get("omittedByTotal")
         summary["totalCapHit"] = meta.get("totalCapHit")
+        summary["truncatedBySize"] = meta.get("truncatedBySize")
+        summary["attributesIncluded"] = meta.get("attributesIncluded")
+        summary["tagsIncluded"] = meta.get("tagsIncluded")
     return summary
 
 def _truncate_list(items: List[Any], limit: int) -> List[Any]:
@@ -740,6 +746,11 @@ def _script_fingerprint(item: Dict[str, Any]) -> str:
     if isinstance(size, int):
         return f"bytes:{size}"
     return "unknown"
+
+def _has_full_source(script: Dict[str, Any]) -> bool:
+    if script.get("source") is None:
+        return False
+    return not bool(script.get("sourceTruncated"))
 
 SEMANTIC_STOPWORDS = {
     "and",
@@ -911,6 +922,8 @@ def _build_semantic_entry(script: Dict[str, Any]) -> Dict[str, Any]:
     path = script.get("path") or ""
     class_name = script.get("className")
     source = script.get("source")
+    if script.get("sourceTruncated"):
+        source = None
     if isinstance(source, str) and len(source.encode("utf-8")) > SEMANTIC_MAX_SOURCE_BYTES:
         source = None
 
@@ -1029,7 +1042,7 @@ def _build_script_index(
             "tags": entry.get("tags") if isinstance(entry, dict) else None,
             "symbolCount": len(symbols) if isinstance(symbols, list) else 0,
             "fingerprint": entry.get("fingerprint") if isinstance(entry, dict) else _script_fingerprint(script),
-            "hasSource": script.get("source") is not None,
+            "hasSource": _has_full_source(script),
         })
     items.sort(key=lambda item: item.get("path") or "")
     truncated = False
@@ -1119,7 +1132,7 @@ def _build_analysis_pack(
     for script in scripts:
         if not isinstance(script, dict):
             continue
-        if script.get("source") is None and script.get("path"):
+        if not _has_full_source(script) and script.get("path"):
             missing_sources.append(script.get("path"))
             if len(missing_sources) >= CODEX_PACK_MAX_ITEMS:
                 break
@@ -1359,6 +1372,7 @@ def _build_focus_pack(context: Optional[Dict[str, Any]], delta: Optional[Dict[st
             if s.get("path") != path:
                 continue
             source = s.get("source")
+            source_truncated = bool(s.get("sourceTruncated"))
             preview = None
             trimmed = False
             line_count = None
@@ -1373,8 +1387,9 @@ def _build_focus_pack(context: Optional[Dict[str, Any]], delta: Optional[Dict[st
                 "sha1": s.get("sha1"),
                 "fingerprint": _script_fingerprint(s),
                 "sourcePreview": preview,
-                "previewTruncated": trimmed,
-                "sourceIsFull": (preview is not None and trimmed is False),
+                "previewTruncated": trimmed or source_truncated,
+                "sourceIsFull": (preview is not None and trimmed is False and source_truncated is False),
+                "sourceTruncated": source_truncated,
                 "lineCount": line_count,
             })
             break
@@ -3049,8 +3064,10 @@ def context_script(
         scripts = data.get("scripts", []) or []
         for s in scripts:
             if s.get("path") == path:
-                if s.get("source") is None:
-                    raise HTTPException(status_code=404, detail="SourceMissing")
+                if not _has_full_source(s):
+                    if s.get("source") is None:
+                        raise HTTPException(status_code=404, detail="SourceMissing")
+                    raise HTTPException(status_code=404, detail="SourceTruncated")
                 return {"ok": True, "projectKey": projectKey, "script": s}
 
         raise HTTPException(status_code=404, detail="ScriptNotFound")
@@ -3070,7 +3087,7 @@ def context_missing(
             raise HTTPException(status_code=404, detail="NoContext")
 
         scripts = data.get("scripts", []) or []
-        missing = [s.get("path") for s in scripts if s.get("source") is None]
+        missing = [s.get("path") for s in scripts if not _has_full_source(s)]
         return {"ok": True, "projectKey": projectKey, "missing": missing, "count": len(missing)}
 
 @app.get("/context/events")
@@ -3243,7 +3260,7 @@ def codex_job(inp: CodexJobIn):
         missing = []
         if context:
             scripts = context.get("scripts", []) or []
-            missing = [s.get("path") for s in scripts if s.get("source") is None]
+            missing = [s.get("path") for s in scripts if not _has_full_source(s)]
 
         script_count = len(context.get("scripts", []) or []) if context else 0
         scenario = _classify_prompt(inp.prompt, script_count)

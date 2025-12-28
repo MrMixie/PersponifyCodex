@@ -3,8 +3,7 @@
 ## Project Structure & Module Organization
 - `app.py` is the local FastAPI companion server that the Roblox plugin connects to.
 - Studio plugin scripts live in Roblox Studio and are not stored in this repo.
-- `tx_update_*.json` are queued transactions used to apply updates back into Roblox Studio.
-- `context_latest.json` captures the most recent context export for quick inspection.
+- `tx_update_*.json` and `context_latest.json` are local-only artifacts; never commit them.
 - `UPGRADES.md` tracks the roadmap and feature backlog.
 - `persponify_mcp_server.py` exposes MCP tools for the real Codex CLI to enqueue actions.
 
@@ -28,12 +27,12 @@
 - Optional quick health check: `curl http://127.0.0.1:3030/health` (expect HTTP 200).
 
 ## Agent Shortcuts (Speed)
-- `python3 scripts/release_zip.py --upload --tag v0.1.0` builds and updates the GitHub release ZIP (auto-creates the release if missing; needs `GH_TOKEN` or `GITHUB_TOKEN`).
+- `python3 scripts/release_zip.py --upload --tag vX.Y.Z` builds and updates the GitHub release ZIP (auto-creates the release if missing; needs `GH_TOKEN` or `GITHUB_TOKEN`).
 - Prefer this helper over manual release asset updates.
 
 ## Coding Style & Naming Conventions
 - Python: 4-space indentation, type hints where practical, keep endpoints and models explicit.
-- Lua: tabs for indentation (align with existing files), module paths mirror Roblox structure (e.g., `ReplicatedStorage/PersponifyStudioAI/Core/...`).
+- Lua: tabs for indentation (align with existing files), module paths mirror Roblox structure (e.g., `ReplicatedStorage/PersponifyCodex/Core/...`).
 - Transactions: keep the `TX_UPDATE_YYYY_MM_DD_NNN` naming pattern for traceability.
 - Prefer clear, defensive logging over clever shortcuts.
 
@@ -54,6 +53,7 @@
 
 ## Agent Workflow (Roblox Plugin)
 - Default to applying edits via tx updates and keep Studio plugin scripts in sync.
+- Never add plugin scripts or context bundles to this repo.
 - Avoid pasting full scripts unless a manual review is needed; summarize changes with file paths instead.
 
 ## Product Goal
@@ -71,7 +71,7 @@
 - Transactions: long-poll wait, fetch/preview/apply, receipts, rollback safety, undo (ChangeHistoryService).
 - Actions supported: createInstance, setProperty/setProperties, deleteInstance (guarded), rename/move, setAttribute/setAttributes, editScript (replace/append/prepend/replaceRange/insertBefore/insertAfter), chunked edits.
 - Safety: allow/deny action lists, protected paths, delete guard + one-time approval.
-- Context export: scoped by placeId + studioSessionId with projectKey strategy; diff exports, full export on demand, diff cache clear, fetch missing sources helper.
+- Context export: scoped by placeId + studioSessionId with projectKey strategy; diff exports, full export on demand, diff cache clear, fetch missing sources helper; optional attributes/tags; per-script `sourceTruncated` flags.
 - UI/UX: auto vs manual mode, terminal/chat layout modes, logs panel + stress test, audit log preview, preview panel, URL select/copy.
 - Multi‑Studio scope: sessions are scoped by placeId + studioSessionId; safe across multiple Studio windows and multiple places within the same game universe, but not intended for cross-experience sharing.
 
@@ -130,6 +130,7 @@
 
 ## Current State (Codex Server + Launcher)
 - Server upgrades in `app.py`: Codex bridge validation + policy (risk score, deny lists, protected roots, max actions), queue limits, job TTL sweep, auto-repair loop, audit ledger, diagnostics, context deltas, focus pack, memory storage, context events, semantic tagging/dependency extraction, `/context/semantic` endpoint, SQLite persistence for context/audit/events/semantic, and a reconcile loop that refreshes cache from disk/DB.
+- Context summary now surfaces `truncatedBySize`, `attributesIncluded`, and `tagsIncluded`; scripts can carry `sourceTruncated` (treated as missing source).
 - New config/env toggles in `app.py`: `PERSPONIFY_SQLITE_ENABLED`, `PERSPONIFY_SQLITE_PATH`, `PERSPONIFY_SEMANTIC_ENABLED`, `PERSPONIFY_SEMANTIC_*`, `PERSPONIFY_RECONCILE_INTERVAL_SEC`, plus Codex policy/risk/size limits already in place.
 - Queue state persistence: `codex_queue/queue_state.json` plus SQLite fallback to survive restarts.
 - Launcher UI (`codex_launcher.py`): green/black theme; status lines; repo display; footer with build label `Build: 2025-12-23-CODEX-02`; buttons moved to footer; custom label-based buttons to force dark theme (Tk buttons were white); Set Repo / Restart / Restart Server; restart can re-exec into a new repo; restart-server keeps worker running; PATH injection for `/usr/local/bin` and `/opt/homebrew/bin`; optional headless mode (`--nogui` or `PERSPONIFY_LAUNCHER_NOGUI=1`); headless prints status lines to stdout.
