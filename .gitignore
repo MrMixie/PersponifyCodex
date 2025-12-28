@@ -15,3 +15,6 @@ codex_queue/
 # Local context/transactions
 context_latest.json
 tx_update_*.json
+
+# Release artifacts
+dist/

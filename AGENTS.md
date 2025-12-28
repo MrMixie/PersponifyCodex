@@ -27,6 +27,11 @@
 - In Roblox Studio, load the plugin and click Connect to verify server discovery and primary lease.
 - Optional quick health check: `curl http://127.0.0.1:3030/health` (expect HTTP 200).
 
+## Agent Shortcuts (Speed)
+- `python3 scripts/quick_sync.py --commit --push` syncs `context_scripts/` to Studio, then commits/pushes.
+- `python3 scripts/release_zip.py --upload --tag v0.1.0` builds and updates the GitHub release ZIP (needs `GH_TOKEN` or `GITHUB_TOKEN`).
+- Prefer these helpers over manual enqueue/commit steps when iterating on plugin scripts.
+
 ## Coding Style & Naming Conventions
 - Python: 4-space indentation, type hints where practical, keep endpoints and models explicit.
 - Lua: tabs for indentation (align with existing files), module paths mirror Roblox structure (e.g., `ReplicatedStorage/PersponifyStudioAI/Core/...`).
