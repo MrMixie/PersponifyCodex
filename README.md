@@ -102,7 +102,7 @@ If you edit files in `context_scripts/`, you can push them to Studio fast:
 - `python3 scripts/quick_sync.py` (sync changed files)
 - `python3 scripts/quick_sync.py --all` (sync everything)
 - `python3 scripts/quick_sync.py --commit --push` (sync + commit + push)
-- `python3 scripts/release_zip.py --upload --tag v0.1.1` (build + upload ZIP, creates the release if missing)
+- `python3 scripts/release_zip.py --upload --tag v0.3.1` (build + upload ZIP, creates the release if missing)
 
 ## Troubleshooting
 - Plugin says **offline**: launcher is not running, or port `3030` is blocked.

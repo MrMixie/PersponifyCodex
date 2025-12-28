@@ -63,7 +63,7 @@ from pydantic import BaseModel, Field
 from companion.service import HeadlessService
 from mcp_common import handle_request as mcp_handle_request
 
-APP_VERSION = "2025.12.22"
+APP_VERSION = "2025.12.28"
 PROTOCOL_VERSION = 1
 DEFAULT_CHUNK_SIZE = 60000
 DEFAULT_COMPANION_CONFIG = "companion/config.example.json"
@@ -293,8 +293,8 @@ HEARTBEAT_TTL_SEC = 15.0
 CLAIM_TTL_SEC = 30.0
 DEFAULT_WAIT_TIMEOUT_SEC = 25.0
 CODEX_JOB_TTL_SEC = float(os.environ.get("PERSPONIFY_CODEX_JOB_TTL_SEC", "600"))
-CODEX_MAX_ACTIONS = int(os.environ.get("PERSPONIFY_CODEX_MAX_ACTIONS", "250"))
-CODEX_MAX_SOURCE_BYTES = int(os.environ.get("PERSPONIFY_CODEX_MAX_SOURCE_BYTES", "250000"))
+CODEX_MAX_ACTIONS = int(os.environ.get("PERSPONIFY_CODEX_MAX_ACTIONS", "400"))
+CODEX_MAX_SOURCE_BYTES = int(os.environ.get("PERSPONIFY_CODEX_MAX_SOURCE_BYTES", "400000"))
 CONTEXT_DELTA_MAX_ITEMS = int(os.environ.get("PERSPONIFY_CONTEXT_DELTA_MAX_ITEMS", "200"))
 CODEX_ALLOWED_EDIT_MODES = {
     "replace",
@@ -326,7 +326,7 @@ SEMANTIC_KEYWORD_LIMIT = int(os.environ.get("PERSPONIFY_SEMANTIC_KEYWORD_LIMIT",
 SEMANTIC_SYMBOL_LIMIT = int(os.environ.get("PERSPONIFY_SEMANTIC_SYMBOL_LIMIT", "40"))
 SEMANTIC_MAX_REQUIRES = int(os.environ.get("PERSPONIFY_SEMANTIC_MAX_REQUIRES", "30"))
 SEMANTIC_MAX_SERVICES = int(os.environ.get("PERSPONIFY_SEMANTIC_MAX_SERVICES", "30"))
-SEMANTIC_MAX_SOURCE_BYTES = int(os.environ.get("PERSPONIFY_SEMANTIC_MAX_SOURCE_BYTES", "200000"))
+SEMANTIC_MAX_SOURCE_BYTES = int(os.environ.get("PERSPONIFY_SEMANTIC_MAX_SOURCE_BYTES", "350000"))
 RECONCILE_INTERVAL_SEC = float(os.environ.get("PERSPONIFY_RECONCILE_INTERVAL_SEC", "15"))
 CONTEXT_EVENTS_PATH = Path(
     os.environ.get("PERSPONIFY_CONTEXT_EVENTS_LOG", str(CODEX_CONTEXT_DIR / "context_events.log"))
@@ -348,6 +348,9 @@ SUPPORTED_ACTIONS = [
     "createInstance",
     "setProperty",
     "setProperties",
+    "cloneInstance",
+    "clearChildren",
+    "setTags",
     "deleteInstance",
     "rename",
     "move",
@@ -1526,6 +1529,124 @@ def _should_auto_repair(tx_id: str) -> bool:
         return False
     return True
 
+def _normalize_action(action: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(action, dict):
+        return action
+    out = dict(action)
+    raw_type = out.get("type") or out.get("action") or out.get("actionType") or ""
+    raw_type = str(raw_type).strip()
+    lower = raw_type.lower()
+
+    if lower in {"createfolder", "create_folder"}:
+        out["type"] = "createInstance"
+        out.setdefault("className", out.get("class") or "Folder")
+    elif lower in {"createscript", "create_script"}:
+        out["type"] = "createInstance"
+        out.setdefault("className", out.get("class") or "Script")
+    elif lower in {"createlocalscript", "create_localscript"}:
+        out["type"] = "createInstance"
+        out.setdefault("className", out.get("class") or "LocalScript")
+    elif lower in {"createmodulescript", "create_modulescript"}:
+        out["type"] = "createInstance"
+        out.setdefault("className", out.get("class") or "ModuleScript")
+    elif lower in {"setscript", "setsource", "setscriptsource"}:
+        out["type"] = "editScript"
+        out.setdefault("mode", "replace")
+        if "source" not in out:
+            out["source"] = (
+                out.get("scriptSource")
+                or out.get("content")
+                or out.get("text")
+                or out.get("value")
+            )
+    elif lower in {"setparent", "moveinstance"}:
+        out["type"] = "move"
+        out.setdefault("newParentPath", out.get("parentPath") or out.get("parent"))
+    elif lower in {"renameinstance", "setname"}:
+        out["type"] = "rename"
+        out.setdefault("newName", out.get("name"))
+    elif lower in {"delete", "remove", "destroy", "destroyinstance"}:
+        out["type"] = "deleteInstance"
+    elif lower in {"clone", "cloneinstance"}:
+        out["type"] = "cloneInstance"
+    elif lower in {"clearchildren", "removechildren"}:
+        out["type"] = "clearChildren"
+    elif lower in {"settags", "addtags", "removetags"}:
+        out["type"] = "setTags"
+        if lower == "addtags":
+            out.setdefault("mode", "add")
+        if lower == "removetags":
+            out.setdefault("mode", "remove")
+    elif lower in {"setproperties"}:
+        out["type"] = "setProperties"
+    elif lower in {"setproperty"}:
+        out["type"] = "setProperty"
+    elif lower in {"setattribute"}:
+        out["type"] = "setAttribute"
+    elif lower in {"setattributes"}:
+        out["type"] = "setAttributes"
+    elif lower in {"edit"}:
+        out["type"] = "editScript"
+    elif raw_type:
+        out["type"] = raw_type
+
+    action_type = out.get("type")
+
+    if action_type in {
+        "setProperty",
+        "setProperties",
+        "deleteInstance",
+        "rename",
+        "move",
+        "setAttribute",
+        "setAttributes",
+        "editScript",
+        "cloneInstance",
+        "clearChildren",
+        "setTags",
+    }:
+        out.setdefault("path", out.get("targetPath") or out.get("target"))
+
+    if action_type == "createInstance":
+        out.setdefault("parentPath", out.get("parent") or out.get("parent_path"))
+        out.setdefault("className", out.get("class") or out.get("class_name"))
+        if "source" not in out:
+            out["source"] = out.get("content") or out.get("text") or out.get("value")
+
+    if action_type == "setProperty":
+        out.setdefault("property", out.get("key"))
+
+    if action_type == "setProperties":
+        out.setdefault("properties", out.get("props") or out.get("values"))
+
+    if action_type == "setAttribute":
+        out.setdefault("attribute", out.get("key"))
+
+    if action_type == "setAttributes":
+        out.setdefault("attributes", out.get("attrs") or out.get("values"))
+
+    if action_type == "move":
+        out.setdefault("newParentPath", out.get("parentPath") or out.get("parent"))
+
+    if action_type == "rename":
+        out.setdefault("newName", out.get("name"))
+
+    if action_type == "cloneInstance":
+        out.setdefault("sourcePath", out.get("source") or out.get("path"))
+        if "path" not in out and out.get("sourcePath"):
+            out["path"] = out["sourcePath"]
+        out.setdefault("parentPath", out.get("parent") or out.get("parentPath"))
+
+    if action_type == "editScript":
+        out.setdefault("mode", "replace")
+        if "source" not in out and "chunks" not in out:
+            out["source"] = out.get("content") or out.get("text") or out.get("value")
+
+    return out
+
+def _normalize_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [_normalize_action(action) for action in actions]
+
 def _validate_codex_actions(actions: List[Dict[str, Any]], context: Optional[Dict[str, Any]]) -> List[str]:
     errors: List[str] = []
     if len(actions) > CODEX_MAX_ACTIONS:
@@ -1565,7 +1686,19 @@ def _validate_codex_actions(actions: List[Dict[str, Any]], context: Optional[Dic
             errors.append(f"action {idx}: blocked type {action_type}")
 
         path = action.get("path")
-        if action_type in {"setProperty", "setProperties", "deleteInstance", "rename", "move", "setAttribute", "setAttributes", "editScript"}:
+        if action_type in {
+            "setProperty",
+            "setProperties",
+            "deleteInstance",
+            "rename",
+            "move",
+            "setAttribute",
+            "setAttributes",
+            "editScript",
+            "cloneInstance",
+            "clearChildren",
+            "setTags",
+        }:
             if not isinstance(path, str) or not path:
                 errors.append(f"action {idx}: missing path")
             elif not path.startswith("game/"):
@@ -1593,6 +1726,24 @@ def _validate_codex_actions(actions: List[Dict[str, Any]], context: Optional[Dic
             source = action.get("source")
             if isinstance(source, str) and len(source.encode("utf-8")) > CODEX_MAX_SOURCE_BYTES:
                 errors.append(f"action {idx}: source too large")
+
+        if action_type == "cloneInstance":
+            parent_path = action.get("parentPath")
+            if parent_path is not None and not isinstance(parent_path, str):
+                errors.append(f"action {idx}: invalid parentPath")
+            if parent_path and not path_under(parent_path, allowed_roots):
+                errors.append(f"action {idx}: parentPath outside allowed roots")
+
+        if action_type == "clearChildren":
+            if not isinstance(path, str) or not path:
+                errors.append(f"action {idx}: missing path")
+
+        if action_type == "setTags":
+            tags = action.get("tags")
+            add = action.get("add")
+            remove = action.get("remove")
+            if tags is None and add is None and remove is None:
+                errors.append(f"action {idx}: missing tags")
 
         if action_type == "setProperty":
             prop = action.get("property")
@@ -1803,6 +1954,7 @@ def _process_codex_response(job_id: str, data: Dict[str, Any], resp_path: Option
         _write_error(job_id, {"ok": False, "error": msg})
         _write_ack(job_id, {"ok": False, "error": msg})
         return
+    actions = _normalize_actions(actions)
     if data.get("ok") is False or len(actions) == 0:
         msg = "No actions to apply"
         err_detail = {"errors": data.get("errors") or data.get("notes")}
@@ -2326,11 +2478,15 @@ def enqueue(inp: EnqueueIn):
         if len(_queue) >= MAX_QUEUE_SIZE:
             raise HTTPException(status_code=429, detail="QueueFull")
 
+        actions = _normalize_actions(list(inp.tx.actions or []))
         s = _next_seq_unlocked()
         claim = "CLAIM_" + str(uuid.uuid4())
         item = {
             "seq": s,
-            "tx": inp.tx.model_dump(),
+            "tx": {
+                **inp.tx.model_dump(),
+                "actions": actions,
+            },
             "claimToken": claim,
             "claimed": False,
             "scope": _scope_key(_primary_place_id, _primary_session_id),
@@ -3038,6 +3194,7 @@ def codex_compile(payload: Dict[str, Any]):
     if not isinstance(actions, list):
         raise HTTPException(status_code=400, detail="Invalid actions list")
 
+    actions = _normalize_actions(actions)
     errors = _validate_codex_actions(actions, None)
     risk = payload.get("riskScore")
     if risk is None:
@@ -3185,6 +3342,7 @@ def _mcp_tool_call(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         actions = args.get("actions")
         if not isinstance(actions, list):
             return {"isError": True, "content": [{"type": "text", "text": "actions must be a list"}]}
+        actions = _normalize_actions(actions)
         tx_id = args.get("transactionId") or f"TX_MCP_{uuid.uuid4()}"
         tx = TxEnvelope(protocolVersion=PROTOCOL_VERSION, transactionId=tx_id, actions=actions)
         try:
