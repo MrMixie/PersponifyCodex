@@ -97,11 +97,7 @@ permission scope. Recommended:
 - New chat tip: start with “sync context” — Codex should call `get_status` and
   `get_context_summary` automatically and summarize the Studio state.
 
-## Quick Sync (Dev Shortcut)
-If you edit files in `context_scripts/`, you can push them to Studio fast:
-- `python3 scripts/quick_sync.py` (sync changed files)
-- `python3 scripts/quick_sync.py --all` (sync everything)
-- `python3 scripts/quick_sync.py --commit --push` (sync + commit + push)
+## Release ZIP (Dev Shortcut)
 - `python3 scripts/release_zip.py --upload --tag v0.3.1` (build + upload ZIP, creates the release if missing)
 
 ## Troubleshooting
@@ -116,7 +112,6 @@ If you edit files in `context_scripts/`, you can push them to Studio fast:
 - `codex_launcher.py` → starts local server + status UI
 - `persponify_mcp_server.py` → MCP server for Codex tool calls (legacy stdio fallback)
 - `persponify_cli.py` → optional legacy wrapper
-- `scripts/quick_sync.py` → sync `context_scripts/` to Studio quickly
 - `STUDIO_GRADE_PROMPT.md` → studio‑grade operating guide
 
 ## Support & Issues

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `app.py` is the local FastAPI companion server that the Roblox plugin connects to.
-- `context_scripts/` holds the exported Roblox modules and UI scripts (e.g., `Core/`, `Protocol/`, `UI/`). Treat these as the source of truth for Studio-side behavior.
+- Studio plugin scripts live in Roblox Studio and are not stored in this repo.
 - `tx_update_*.json` are queued transactions used to apply updates back into Roblox Studio.
 - `context_latest.json` captures the most recent context export for quick inspection.
 - `UPGRADES.md` tracks the roadmap and feature backlog.
@@ -28,9 +28,8 @@
 - Optional quick health check: `curl http://127.0.0.1:3030/health` (expect HTTP 200).
 
 ## Agent Shortcuts (Speed)
-- `python3 scripts/quick_sync.py --commit --push` syncs `context_scripts/` to Studio, then commits/pushes.
 - `python3 scripts/release_zip.py --upload --tag v0.1.0` builds and updates the GitHub release ZIP (auto-creates the release if missing; needs `GH_TOKEN` or `GITHUB_TOKEN`).
-- Prefer these helpers over manual enqueue/commit steps when iterating on plugin scripts.
+- Prefer this helper over manual release asset updates.
 
 ## Coding Style & Naming Conventions
 - Python: 4-space indentation, type hints where practical, keep endpoints and models explicit.
@@ -54,7 +53,7 @@
 - When modifying connection logic, ensure localhost-only defaults remain intact.
 
 ## Agent Workflow (Roblox Plugin)
-- Default to applying edits via tx updates and keep `context_scripts/` in sync.
+- Default to applying edits via tx updates and keep Studio plugin scripts in sync.
 - Avoid pasting full scripts unless a manual review is needed; summarize changes with file paths instead.
 
 ## Product Goal
@@ -145,7 +144,6 @@
 ## Pending / In Progress (Roblox Plugin)
 - User requested a brand new, separate Codex-focused plugin (not a rename of the old plugin). Work was paused mid-way because we started copying modules from the old plugin for convenience.
 - Changes already made in the local `PersponifyAITest` repo before the stop:
-  - Copied core files from `context_scripts/ReplicatedStorage__PersponifyStudioAI__*` to new `context_scripts/ReplicatedStorage__PersponifyCodex__*` for a fresh plugin scaffold.
   - Updated `ReplicatedStorage__PersponifyCodex__Core__Config.lua` with Codex branding, base URL default to 3030, status poll interval, Codex prompt/config table, and protected root rename.
   - Updated `ReplicatedStorage__PersponifyCodex__Core__Version.lua` branding/internal root/build id.
   - Updated `ReplicatedStorage__PersponifyCodex__Core__Transport.lua` endpoints to include Codex endpoints (`/codex/job`, `/codex/status`, `/codex/compile`, `/diagnostics`, `/audit/ledger`, `/context/semantic`, `/context/memory`), plus helper methods to call them.
