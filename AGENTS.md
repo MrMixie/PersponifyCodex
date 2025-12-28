@@ -29,7 +29,7 @@
 
 ## Agent Shortcuts (Speed)
 - `python3 scripts/quick_sync.py --commit --push` syncs `context_scripts/` to Studio, then commits/pushes.
-- `python3 scripts/release_zip.py --upload --tag v0.1.0` builds and updates the GitHub release ZIP (needs `GH_TOKEN` or `GITHUB_TOKEN`).
+- `python3 scripts/release_zip.py --upload --tag v0.1.0` builds and updates the GitHub release ZIP (auto-creates the release if missing; needs `GH_TOKEN` or `GITHUB_TOKEN`).
 - Prefer these helpers over manual enqueue/commit steps when iterating on plugin scripts.
 
 ## Coding Style & Naming Conventions

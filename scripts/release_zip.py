@@ -73,6 +73,20 @@ def _get_release(repo: str, tag: str, token: Optional[str]) -> dict:
     return _github_request(url, token)
 
 
+def _create_release(repo: str, tag: str, token: str) -> dict:
+    url = f"https://api.github.com/repos/{repo}/releases"
+    payload = json.dumps(
+        {
+            "tag_name": tag,
+            "name": tag,
+            "draft": False,
+            "prerelease": False,
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    return _github_request(url, token, method="POST", data=payload, extra_headers=headers)
+
+
 def _delete_asset(repo: str, asset_id: int, token: str) -> None:
     url = f"https://api.github.com/repos/{repo}/releases/assets/{asset_id}"
     _github_request(url, token, method="DELETE")
@@ -122,7 +136,14 @@ def main() -> int:
         print("Missing GitHub token (use --token or GH_TOKEN/GITHUB_TOKEN).", file=sys.stderr)
         return 1
 
-    release = _get_release(args.repo, tag, token)
+    try:
+        release = _get_release(args.repo, tag, token)
+    except RuntimeError as exc:
+        if "404" in str(exc) or "Not Found" in str(exc):
+            print(f"Release {tag} not found; creating.")
+            release = _create_release(args.repo, tag, token)
+        else:
+            raise
     release_id = release.get("id")
     if not release_id:
         print(f"Release tag not found: {tag}", file=sys.stderr)
