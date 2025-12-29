@@ -55,6 +55,7 @@
 - Default to applying edits via tx updates and keep Studio plugin scripts in sync.
 - Never add plugin scripts or context bundles to this repo.
 - Avoid pasting full scripts unless a manual review is needed; summarize changes with file paths instead.
+- Use telemetry endpoints for live scene/UI inspection when context exports are insufficient; scope requests to keep payloads small.
 
 ## Product Goal
 - Build a local-first companion experience that delivers what "Lemonade" offers, but better: dynamic connections between the Roblox plugin and multiple AI backends (local + OpenAI/ChatGPT + others), without requiring user-managed servers or subscriptions. Users buy the plugin once, and the companion app runs free/local.
@@ -69,10 +70,11 @@
 ## Current Plugin Capabilities (Studio)
 - Connection + discovery: local-only health check, primary lease, sync, heartbeat, status polling, auto-reconnect, manual URL override.
 - Transactions: long-poll wait, fetch/preview/apply, receipts, rollback safety, undo (ChangeHistoryService).
-- Actions supported: createInstance, setProperty/setProperties, deleteInstance (guarded), rename/move, setAttribute/setAttributes, editScript (replace/append/prepend/replaceRange/insertBefore/insertAfter), chunked edits.
+- Actions supported: createInstance, setProperty/setProperties, setAttribute/setAttributes, deleteInstance (guarded), rename/move, cloneInstance, clearChildren, setTags, editScript (replace/append/prepend/replaceRange/insertBefore/insertAfter), chunked edits; common Roblox types decode via `__type` payloads.
 - Safety: allow/deny action lists, protected paths, delete guard + one-time approval.
 - Context export: scoped by placeId + studioSessionId with projectKey strategy; diff exports, full export on demand, diff cache clear, fetch missing sources helper; optional attributes/tags; per-script `sourceTruncated` flags.
 - UI/UX: auto vs manual mode, terminal/chat layout modes, logs panel + stress test, audit log preview, preview panel, URL select/copy.
+- Telemetry: on-demand snapshots for scene/GUI/lighting/selection/camera, log stream, diff feed, asset inventory, tag/attribute index, UI layout QA; request via `/telemetry/request` with include flags.
 - Multi‑Studio scope: sessions are scoped by placeId + studioSessionId; safe across multiple Studio windows and multiple places within the same game universe, but not intended for cross-experience sharing.
 
 ## Work Log (Recent)
@@ -131,6 +133,7 @@
 ## Current State (Codex Server + Launcher)
 - Server upgrades in `app.py`: Codex bridge validation + policy (risk score, deny lists, protected roots, max actions), queue limits, job TTL sweep, auto-repair loop, audit ledger, diagnostics, context deltas, focus pack, memory storage, context events, semantic tagging/dependency extraction, `/context/semantic` endpoint, SQLite persistence for context/audit/events/semantic, and a reconcile loop that refreshes cache from disk/DB.
 - Context summary now surfaces `truncatedBySize`, `attributesIncluded`, and `tagsIncluded`; scripts can carry `sourceTruncated` (treated as missing source).
+- Telemetry endpoints: `/telemetry/request`, `/telemetry/report`, `/telemetry/latest`, `/telemetry/summary`, `/telemetry/reset` with include flags (`includeScene`, `includeGui`, `includeLighting`, `includeSelection`, `includeCamera`, `includeLogs`, `includeDiffs`, `includeAssets`, `includeTagIndex`, `includeUiQa`).
 - New config/env toggles in `app.py`: `PERSPONIFY_SQLITE_ENABLED`, `PERSPONIFY_SQLITE_PATH`, `PERSPONIFY_SEMANTIC_ENABLED`, `PERSPONIFY_SEMANTIC_*`, `PERSPONIFY_RECONCILE_INTERVAL_SEC`, plus Codex policy/risk/size limits already in place.
 - Queue state persistence: `codex_queue/queue_state.json` plus SQLite fallback to survive restarts.
 - Launcher UI (`codex_launcher.py`): green/black theme; status lines; repo display; footer with build label `Build: 2025-12-23-CODEX-02`; buttons moved to footer; custom label-based buttons to force dark theme (Tk buttons were white); Set Repo / Restart / Restart Server; restart can re-exec into a new repo; restart-server keeps worker running; PATH injection for `/usr/local/bin` and `/opt/homebrew/bin`; optional headless mode (`--nogui` or `PERSPONIFY_LAUNCHER_NOGUI=1`); headless prints status lines to stdout.

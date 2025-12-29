@@ -107,6 +107,8 @@ permission scope. Recommended:
 - Context export: diff/full, scoped roots/paths, missing-source tracking, semantic tags/deps.
 - Context payload flags: `sourceTruncated` per script; summary fields `truncatedBySize`,
   `attributesIncluded`, `tagsIncluded`.
+- Telemetry (on-demand): scene/GUI/lighting/selection/camera snapshots, log stream,
+  diff feed, asset inventory, tag/attribute index, UI layout QA.
 - Codex packs: focus pack with `sourceIsFull` + `previewTruncated`, analysis pack
   (deps/hotspots), rollback snapshots, blueprint/refactor helpers.
 

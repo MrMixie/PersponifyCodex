@@ -37,7 +37,7 @@ DEFAULT_REPO_NAMES = [
     "PersponifyCodexRepo",
     "PersponifyCodexServer",
 ]
-_VERSION_RE = re.compile(r"APP_VERSION\\s*=\\s*[\"']([^\"']+)[\"']")
+_VERSION_RE = re.compile(r"APP_VERSION\s*=\s*[\"']([^\"']+)[\"']")
 _REPO_NAME_RE = re.compile(r"^persponifycodex", re.IGNORECASE)
 
 

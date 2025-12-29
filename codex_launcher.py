@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -49,8 +50,6 @@ THEME = {
 }
 
 ROOT = Path(__file__).resolve().parent
-SERVER_PATH = ROOT / "app.py"
-WORKER_PATH = ROOT / "codex_worker.py"
 EXTRA_PATHS = [
     "/usr/local/bin",
     "/opt/homebrew/bin",
@@ -75,11 +74,10 @@ def _support_dir() -> Path:
 SUPPORT_DIR = _support_dir()
 CONFIG_PATH = SUPPORT_DIR / "launcher.json"
 STATE_PATH = SUPPORT_DIR / "launcher_state.json"
-LOG_PATH = SUPPORT_DIR / "codex_server.log"
-WORKER_LOG_PATH = SUPPORT_DIR / "codex_worker.log"
+LOGS_DIR = SUPPORT_DIR / "logs"
 
 
-_VERSION_RE = re.compile(r"APP_VERSION\\s*=\\s*[\"']([^\"']+)[\"']")
+_VERSION_RE = re.compile(r"APP_VERSION\s*=\s*[\"']([^\"']+)[\"']")
 _REPO_NAME_RE = re.compile(r"^persponifycodex", re.IGNORECASE)
 
 
@@ -120,6 +118,23 @@ def _repo_mtime(path: Path) -> float:
         return path.stat().st_mtime
     except Exception:
         return 0.0
+
+
+def _slug(value: str) -> str:
+    value = re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
+    return value.strip("._-") or "repo"
+
+
+def _repo_log_tag(repo_root: Path) -> str:
+    version = _read_repo_version(repo_root) or "unknown"
+    digest = hashlib.sha1(str(repo_root).encode("utf-8")).hexdigest()[:8]
+    return _slug(f"{repo_root.name}-{version}-{digest}")
+
+
+def _log_paths(repo_root: Path) -> tuple[Path, Path]:
+    tag = _repo_log_tag(repo_root)
+    base = LOGS_DIR / tag
+    return base / "codex_server.log", base / "codex_worker.log"
 
 
 def _collect_repo_candidates(config: Optional[dict]) -> list[Path]:
@@ -324,6 +339,7 @@ class ServerController:
         self.proc: Optional[subprocess.Popen] = None
         self.started_by_launcher = False
         self.log_file = None
+        self.log_path: Optional[Path] = None
 
     def is_port_open(self) -> bool:
         try:
@@ -332,17 +348,26 @@ class ServerController:
         except OSError:
             return False
 
-    def start(self) -> None:
+    def start(self, repo_root: Path) -> None:
         if self.is_port_open():
-            cleaned = _cleanup_stale_server(ROOT)
+            cleaned = _cleanup_stale_server(repo_root)
             if not cleaned and self.is_port_open():
                 raise RuntimeError("Port 3030 already in use")
-        if not SERVER_PATH.exists():
-            raise FileNotFoundError(f"Server not found: {SERVER_PATH}")
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.log_file = open(LOG_PATH, "a", encoding="utf-8")
-        cmd = [sys.executable, str(SERVER_PATH), "--host", HOST, "--port", str(PORT)]
-        self.proc = subprocess.Popen(cmd, stdout=self.log_file, stderr=self.log_file, **_popen_kwargs())
+        server_path = repo_root / "app.py"
+        if not server_path.exists():
+            raise FileNotFoundError(f"Server not found: {server_path}")
+        log_path, _ = _log_paths(repo_root)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path = log_path
+        self.log_file = open(log_path, "a", encoding="utf-8")
+        cmd = [sys.executable, str(server_path), "--host", HOST, "--port", str(PORT)]
+        self.proc = subprocess.Popen(
+            cmd,
+            stdout=self.log_file,
+            stderr=self.log_file,
+            cwd=str(repo_root),
+            **_popen_kwargs(),
+        )
         self.started_by_launcher = True
 
     def stop(self) -> None:
@@ -361,6 +386,7 @@ class ServerController:
             except Exception:
                 pass
             self.log_file = None
+            self.log_path = None
 
 
 class WorkerController:
@@ -368,15 +394,25 @@ class WorkerController:
         self.proc: Optional[subprocess.Popen] = None
         self.started_by_launcher = False
         self.log_file = None
+        self.log_path: Optional[Path] = None
 
-    def start(self) -> None:
-        _cleanup_stale_worker(ROOT)
-        if not WORKER_PATH.exists():
-            raise FileNotFoundError(f"Worker not found: {WORKER_PATH}")
-        WORKER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.log_file = open(WORKER_LOG_PATH, "a", encoding="utf-8")
-        cmd = [sys.executable, str(WORKER_PATH)]
-        self.proc = subprocess.Popen(cmd, stdout=self.log_file, stderr=self.log_file, **_popen_kwargs())
+    def start(self, repo_root: Path) -> None:
+        _cleanup_stale_worker(repo_root)
+        worker_path = repo_root / "codex_worker.py"
+        if not worker_path.exists():
+            raise FileNotFoundError(f"Worker not found: {worker_path}")
+        _, worker_log_path = _log_paths(repo_root)
+        worker_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path = worker_log_path
+        self.log_file = open(worker_log_path, "a", encoding="utf-8")
+        cmd = [sys.executable, str(worker_path)]
+        self.proc = subprocess.Popen(
+            cmd,
+            stdout=self.log_file,
+            stderr=self.log_file,
+            cwd=str(repo_root),
+            **_popen_kwargs(),
+        )
         self.started_by_launcher = True
 
     def stop(self) -> None:
@@ -389,6 +425,7 @@ class WorkerController:
             except Exception:
                 pass
             self.log_file = None
+            self.log_path = None
 
 
 class StatusState:
@@ -1033,13 +1070,15 @@ def _run_headless() -> int:
     worker = WorkerController()
     state = StatusState()
     stop_event = threading.Event()
+    config = _read_config()
+    repo_display = _resolve_repo(config)
 
     try:
-        controller.start()
+        controller.start(repo_display)
     except Exception as exc:
         state.server = f"Server: failed to start ({exc})"
     try:
-        worker.start()
+        worker.start(repo_display)
     except Exception as exc:
         state.worker = f"Worker: failed to start ({exc})"
 
@@ -1097,13 +1136,16 @@ def _run_gui() -> int:
     worker = WorkerController()
     state = StatusState()
     stop_event = threading.Event()
+    config = _read_config()
+    repo_display = _resolve_repo(config)
+    log_path, _ = _log_paths(repo_display)
 
     try:
-        controller.start()
+        controller.start(repo_display)
     except Exception as exc:
         state.server = f"Server: failed to start ({exc})"
     try:
-        worker.start()
+        worker.start(repo_display)
     except Exception as exc:
         state.worker = f"Worker: failed to start ({exc})"
 
@@ -1239,8 +1281,6 @@ def _run_gui() -> int:
         row.pack(fill="x", padx=12, pady=6)
         return row
 
-    config = _read_config()
-    repo_display = _resolve_repo(config)
     codex_cmd = _detect_codex_cmd(repo_display)
 
     state_data = _read_state()
@@ -1279,7 +1319,7 @@ def _run_gui() -> int:
 
     log_hint = tk.Label(
         panel,
-        text=f"Log: {LOG_PATH}",
+        text=f"Log: {log_path}",
         anchor="w",
         font=muted_font,
         fg=THEME["muted"],
@@ -2830,7 +2870,7 @@ def _run_gui() -> int:
     scope_var.trace_add("write", on_scope_change)
 
     def on_set_repo() -> None:
-        nonlocal codex_cmd, repo_display
+        nonlocal codex_cmd, repo_display, log_path
         selection = filedialog.askdirectory(title="Select PersponifyCodex folder")
         if not selection:
             return
@@ -2841,6 +2881,8 @@ def _run_gui() -> int:
         _write_config(candidate)
         repo_display = candidate
         repo_label.configure(text=f"Repo: {candidate}")
+        log_path, _ = _log_paths(candidate)
+        log_hint.configure(text=f"Log: {log_path}")
         codex_cmd = _detect_codex_cmd(candidate)
         messagebox.showinfo(
             "Persponify Codex",
@@ -2859,8 +2901,8 @@ def _run_gui() -> int:
             os.execv(python_path, [python_path, str(launcher_path)])
             return
         try:
-            controller.start()
-            worker.start()
+            controller.start(repo_target)
+            worker.start(repo_target)
         except Exception as exc:
             messagebox.showerror("Persponify Codex", f"Restart failed: {exc}")
         refresh_labels()
@@ -2868,7 +2910,9 @@ def _run_gui() -> int:
     def on_restart_server() -> None:
         controller.stop()
         try:
-            controller.start()
+            cfg = _read_config()
+            repo_target = _resolve_repo(cfg)
+            controller.start(repo_target)
         except Exception as exc:
             messagebox.showerror("Persponify Codex", f"Server restart failed: {exc}")
         refresh_labels()

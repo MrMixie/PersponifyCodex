@@ -52,6 +52,16 @@ Context + memory
   - `packs.refactor` provides refactor guardrails.
 - Memory is per chat and scoped to gameId + placeId. Do not carry memory across chats.
 - If memory is missing, use current chat history + context summary instead of guessing.
+- Telemetry is separate from context; use it for live scene/UI inspection when context exports are not enough.
+
+Telemetry (live scene/UI)
+- Request telemetry with `/telemetry/request` (supports `roots`/`paths` plus include flags).
+- Include flags: `includeScene`, `includeGui`, `includeLighting`, `includeSelection`, `includeCamera`,
+  `includeLogs`, `includeDiffs`, `includeAssets`, `includeTagIndex`, `includeUiQa`.
+- After requesting, poll `/telemetry/summary` or `/telemetry/latest`; `/status` exposes `telemetryRequest`.
+- Use `includeUiQa` to find UI overflow/off-screen elements, hitbox sizes, and safe‑zone issues.
+- Use `includeAssets` + `includeTagIndex` to inventory asset usage and tag/attribute coverage.
+- Keep telemetry scoped and targeted to avoid oversized payloads.
 
 Planning + checklist behavior
 - Use a checklist only for multi-step or system-level work.
