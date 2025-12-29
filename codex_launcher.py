@@ -79,8 +79,125 @@ LOG_PATH = SUPPORT_DIR / "codex_server.log"
 WORKER_LOG_PATH = SUPPORT_DIR / "codex_worker.log"
 
 
+_VERSION_RE = re.compile(r"APP_VERSION\\s*=\\s*[\"']([^\"']+)[\"']")
+_REPO_NAME_RE = re.compile(r"^persponifycodex", re.IGNORECASE)
+
+
 def _looks_like_repo(path: Path) -> bool:
     return (path / "codex_launcher.py").exists() and (path / "app.py").exists()
+
+
+def _read_repo_version(path: Path) -> Optional[str]:
+    app_path = path / "app.py"
+    if not app_path.exists():
+        return None
+    try:
+        text = app_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    match = _VERSION_RE.search(text)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _version_key(version: Optional[str]) -> tuple[int, ...]:
+    if not version:
+        return ()
+    parts = re.findall(r"\\d+", version)
+    if not parts:
+        return ()
+    return tuple(int(part) for part in parts)
+
+
+def _repo_mtime(path: Path) -> float:
+    for candidate in (path / "app.py", path / "codex_launcher.py"):
+        try:
+            return candidate.stat().st_mtime
+        except Exception:
+            continue
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def _collect_repo_candidates(config: Optional[dict]) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add_candidate(candidate: Optional[Path]) -> None:
+        if not candidate:
+            return
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            return
+        key = str(resolved)
+        if key in seen:
+            return
+        if not _looks_like_repo(resolved):
+            return
+        seen.add(key)
+        candidates.append(resolved)
+
+    if config:
+        repo_path = config.get("repoPath")
+        if isinstance(repo_path, str) and repo_path:
+            add_candidate(Path(repo_path))
+
+    add_candidate(ROOT)
+
+    for base in [Path.cwd(), Path.home(), Path.home() / "Desktop", Path.home() / "Documents"]:
+        if not base.exists():
+            continue
+        try:
+            entries = list(base.iterdir())
+        except Exception:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            if not _REPO_NAME_RE.match(entry.name):
+                continue
+            add_candidate(entry)
+
+    return candidates
+
+
+def _select_best_repo(candidates: list[Path]) -> Optional[Path]:
+    best = None
+    best_key = None
+    for candidate in candidates:
+        version = _read_repo_version(candidate)
+        key = (
+            1 if version else 0,
+            _version_key(version),
+            _repo_mtime(candidate),
+        )
+        if best is None or key > best_key:
+            best = candidate
+            best_key = key
+    return best
+
+
+def _resolve_repo(config: Optional[dict]) -> Path:
+    override = os.environ.get("PERSPONIFY_CODEX_REPO")
+    if override:
+        candidate = Path(override).expanduser().resolve()
+        if _looks_like_repo(candidate):
+            if not config or config.get("repoPath") != str(candidate):
+                _write_config(candidate)
+            return candidate
+
+    candidates = _collect_repo_candidates(config)
+    best = _select_best_repo(candidates)
+    if best:
+        if not config or config.get("repoPath") != str(best):
+            _write_config(best)
+        return best
+
+    return ROOT
 
 
 def _read_config() -> dict:
@@ -1123,12 +1240,7 @@ def _run_gui() -> int:
         return row
 
     config = _read_config()
-    repo_display = ROOT
-    repo_path = config.get("repoPath") if isinstance(config, dict) else None
-    if isinstance(repo_path, str) and repo_path:
-        candidate = Path(repo_path).expanduser().resolve()
-        if _looks_like_repo(candidate):
-            repo_display = candidate
+    repo_display = _resolve_repo(config)
     codex_cmd = _detect_codex_cmd(repo_display)
 
     state_data = _read_state()
@@ -2718,7 +2830,7 @@ def _run_gui() -> int:
     scope_var.trace_add("write", on_scope_change)
 
     def on_set_repo() -> None:
-        nonlocal codex_cmd
+        nonlocal codex_cmd, repo_display
         selection = filedialog.askdirectory(title="Select PersponifyCodex folder")
         if not selection:
             return
@@ -2727,6 +2839,7 @@ def _run_gui() -> int:
             messagebox.showerror("Persponify Codex", "That folder doesn't look like a PersponifyCodex repo.")
             return
         _write_config(candidate)
+        repo_display = candidate
         repo_label.configure(text=f"Repo: {candidate}")
         codex_cmd = _detect_codex_cmd(candidate)
         messagebox.showinfo(
@@ -2738,17 +2851,13 @@ def _run_gui() -> int:
         controller.stop()
         worker.stop()
         cfg = _read_config()
-        repo_override = None
-        if isinstance(cfg, dict):
-            repo_override = cfg.get("repoPath")
-        if isinstance(repo_override, str) and repo_override:
-            candidate = Path(repo_override).expanduser().resolve()
-            if _looks_like_repo(candidate) and candidate != ROOT:
-                python_path = _select_restart_python(cfg)
-                launcher_path = candidate / "codex_launcher.py"
-                os.chdir(str(candidate))
-                os.execv(python_path, [python_path, str(launcher_path)])
-                return
+        repo_target = _resolve_repo(cfg)
+        if repo_target != ROOT:
+            python_path = _select_restart_python(cfg)
+            launcher_path = repo_target / "codex_launcher.py"
+            os.chdir(str(repo_target))
+            os.execv(python_path, [python_path, str(launcher_path)])
+            return
         try:
             controller.start()
             worker.start()

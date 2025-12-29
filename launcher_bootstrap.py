@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,8 @@ DEFAULT_REPO_NAMES = [
     "PersponifyCodexRepo",
     "PersponifyCodexServer",
 ]
+_VERSION_RE = re.compile(r"APP_VERSION\\s*=\\s*[\"']([^\"']+)[\"']")
+_REPO_NAME_RE = re.compile(r"^persponifycodex", re.IGNORECASE)
 
 
 def _alert(message: str) -> None:
@@ -97,13 +100,59 @@ def _load_config() -> Optional[dict]:
 def _looks_like_repo(path: Path) -> bool:
     return (path / "codex_launcher.py").exists() and (path / "app.py").exists()
 
+def _read_repo_version(path: Path) -> Optional[str]:
+    app_path = path / "app.py"
+    if not app_path.exists():
+        return None
+    try:
+        text = app_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    match = _VERSION_RE.search(text)
+    if not match:
+        return None
+    return match.group(1).strip()
 
-def _auto_detect_repo() -> Optional[Path]:
-    override = os.environ.get("PERSPONIFY_CODEX_REPO")
-    if override:
-        candidate = Path(override).expanduser().resolve()
-        if _looks_like_repo(candidate):
-            return candidate
+
+def _version_key(version: Optional[str]) -> tuple[int, ...]:
+    if not version:
+        return ()
+    parts = re.findall(r"\\d+", version)
+    if not parts:
+        return ()
+    return tuple(int(part) for part in parts)
+
+
+def _repo_mtime(path: Path) -> float:
+    for candidate in (path / "app.py", path / "codex_launcher.py"):
+        try:
+            return candidate.stat().st_mtime
+        except Exception:
+            continue
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return 0.0
+
+
+def _auto_detect_repos() -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add_candidate(candidate: Optional[Path]) -> None:
+        if not candidate:
+            return
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            return
+        key = str(resolved)
+        if key in seen:
+            return
+        if not _looks_like_repo(resolved):
+            return
+        seen.add(key)
+        candidates.append(resolved)
 
     script_path = Path(__file__).resolve()
     app_root = None
@@ -113,17 +162,44 @@ def _auto_detect_repo() -> Optional[Path]:
             break
     if app_root:
         for parent in [app_root.parent] + list(app_root.parent.parents)[:3]:
-            if _looks_like_repo(parent):
-                return parent
+            add_candidate(parent)
+
+    for base in [Path.cwd(), Path.home(), Path.home() / "Desktop", Path.home() / "Documents"]:
+        if not base.exists():
+            continue
+        try:
+            entries = list(base.iterdir())
+        except Exception:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            if _REPO_NAME_RE.match(entry.name):
+                add_candidate(entry)
 
     for base in [Path.cwd(), Path.home()]:
         if not base.exists():
             continue
         for name in DEFAULT_REPO_NAMES:
-            candidate = (base / name).resolve()
-            if _looks_like_repo(candidate):
-                return candidate
-    return None
+            add_candidate((base / name))
+
+    return candidates
+
+
+def _select_best_repo(candidates: list[Path]) -> Optional[Path]:
+    best = None
+    best_key = None
+    for candidate in candidates:
+        version = _read_repo_version(candidate)
+        key = (
+            1 if version else 0,
+            _version_key(version),
+            _repo_mtime(candidate),
+        )
+        if best is None or key > best_key:
+            best = candidate
+            best_key = key
+    return best
 
 
 def _write_config(repo_path: Path, python_path: str) -> None:
@@ -200,25 +276,39 @@ def main() -> int:
     repo_path = None
     if config:
         repo_path = config.get("repoPath")
+
+    override = os.environ.get("PERSPONIFY_CODEX_REPO")
+    if override:
+        candidate = Path(override).expanduser().resolve()
+        if _looks_like_repo(candidate):
+            _write_config(candidate, python_path)
+            repo_path = str(candidate)
+
+    candidates = _auto_detect_repos()
+    if config and isinstance(config.get("repoPath"), str):
+        candidate = Path(config.get("repoPath")).expanduser().resolve()
+        if _looks_like_repo(candidate) and candidate not in candidates:
+            candidates.insert(0, candidate)
+    best = _select_best_repo(candidates)
+    if best:
+        if repo_path != str(best):
+            _write_config(best, python_path)
+        repo_path = str(best)
+
     if not isinstance(repo_path, str) or not repo_path:
-        detected = _auto_detect_repo()
-        if detected:
-            _write_config(detected, python_path)
-            repo_path = str(detected)
+        picked = _prompt_for_repo()
+        if picked and _looks_like_repo(picked):
+            _write_config(picked, python_path)
+            repo_path = str(picked)
         else:
-            picked = _prompt_for_repo()
-            if picked and _looks_like_repo(picked):
-                _write_config(picked, python_path)
-                repo_path = str(picked)
-            else:
-                SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-                if not CONFIG_PATH.exists():
-                    CONFIG_PATH.write_text(json.dumps({"repoPath": "", "pythonPath": ""}, indent=2))
-                _alert(
-                    "Missing launcher config. Edit "
-                    f"{CONFIG_PATH} and set repoPath to your PersponifyCodex folder."
-                )
-                return 1
+            SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+            if not CONFIG_PATH.exists():
+                CONFIG_PATH.write_text(json.dumps({"repoPath": "", "pythonPath": ""}, indent=2))
+            _alert(
+                "Missing launcher config. Edit "
+                f"{CONFIG_PATH} and set repoPath to your PersponifyCodex folder."
+            )
+            return 1
 
     repo = Path(repo_path).expanduser().resolve()
     launcher = repo / "codex_launcher.py"
