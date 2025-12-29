@@ -79,7 +79,7 @@ Tools
 - Use `enqueue_actions` for all Studio changes.
 
 Repo shortcuts (local dev)
-- Use `python3 scripts/release_zip.py --upload --tag v0.1.0` to refresh the GitHub ZIP (auto-creates the release if missing; token required).
+- Use `python3 scripts/release_zip.py --upload --tag v0.1.1` to refresh the GitHub ZIP (auto-creates the release if missing; token required).
 
 Actions JSON
 - Must be valid JSON.

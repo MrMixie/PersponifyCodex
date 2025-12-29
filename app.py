@@ -63,7 +63,7 @@ from pydantic import BaseModel, Field
 from companion.service import HeadlessService
 from mcp_common import handle_request as mcp_handle_request
 
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.1"
 PROTOCOL_VERSION = 1
 DEFAULT_CHUNK_SIZE = 60000
 DEFAULT_COMPANION_CONFIG = "companion/config.example.json"
@@ -145,6 +145,7 @@ class ContextScriptItem(BaseModel):
     bytes: Optional[int] = None
     source: Optional[str] = None  # optionally omitted for large scripts
     sourceTruncated: Optional[bool] = None
+    sourceOmittedReason: Optional[str] = None
     attributes: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
 
@@ -160,6 +161,39 @@ class ContextRequestIn(BaseModel):
     paths: Optional[List[str]] = None
     includeSources: Optional[bool] = None
     mode: Optional[str] = None  # "full" | "diff"
+
+class TelemetryReportIn(BaseModel):
+    projectKey: str = "default"
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    camera: Optional[Dict[str, Any]] = None
+    selection: Optional[List[Any]] = None
+    nodes: Optional[List[Any]] = None
+    ui: Optional[List[Any]] = None
+    lighting: Optional[Dict[str, Any]] = None
+    services: Optional[List[str]] = None
+    logs: Optional[List[Any]] = None
+    diffs: Optional[List[Any]] = None
+    assets: Optional[Dict[str, Any]] = None
+    tagIndex: Optional[Dict[str, Any]] = None
+    uiQa: Optional[Dict[str, Any]] = None
+
+    class Config:
+        extra = "allow"
+
+class TelemetryRequestIn(BaseModel):
+    projectKey: Optional[str] = None
+    roots: Optional[List[str]] = None
+    paths: Optional[List[str]] = None
+    includeScene: Optional[bool] = None
+    includeGui: Optional[bool] = None
+    includeLighting: Optional[bool] = None
+    includeSelection: Optional[bool] = None
+    includeCamera: Optional[bool] = None
+    includeLogs: Optional[bool] = None
+    includeDiffs: Optional[bool] = None
+    includeAssets: Optional[bool] = None
+    includeTagIndex: Optional[bool] = None
+    includeUiQa: Optional[bool] = None
 
 class ContextMemoryIn(BaseModel):
     projectKey: str = "default"
@@ -257,6 +291,12 @@ _context_last_export_at: Dict[Tuple[int, str, str], float] = {}
 _context_semantic: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
 _context_memory_mtime: Dict[Tuple[int, str, str], float] = {}
 _context_export_requests: Dict[Tuple[int, str], Dict[str, Any]] = {}
+
+# Telemetry store
+_telemetry_latest: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+_telemetry_versions: Dict[Tuple[int, str, str], int] = {}
+_telemetry_last_export_at: Dict[Tuple[int, str, str], float] = {}
+_telemetry_export_requests: Dict[Tuple[int, str], Dict[str, Any]] = {}
 
 # Codex bridge state
 _codex_lock = threading.RLock()
@@ -470,6 +510,10 @@ def _resolve_scope_for_debug(placeId: Optional[int], studioSessionId: Optional[s
         raise HTTPException(status_code=422, detail="placeId and studioSessionId required (or connect primary first)") from e
 
 def _context_id(place_id: int, session_id: str, project_key: str) -> str:
+    safe_key = str(project_key or "default").replace("/", "_")
+    return f"p_{int(place_id)}__s_{str(session_id)}__k_{safe_key}"
+
+def _telemetry_id(place_id: int, session_id: str, project_key: str) -> str:
     safe_key = str(project_key or "default").replace("/", "_")
     return f"p_{int(place_id)}__s_{str(session_id)}__k_{safe_key}"
 
@@ -751,6 +795,13 @@ def _has_full_source(script: Dict[str, Any]) -> bool:
     if script.get("source") is None:
         return False
     return not bool(script.get("sourceTruncated"))
+
+def _is_missing_source(script: Dict[str, Any]) -> bool:
+    if _has_full_source(script):
+        return False
+    if script.get("sourceOmittedReason") == "diff":
+        return False
+    return True
 
 SEMANTIC_STOPWORDS = {
     "and",
@@ -1132,7 +1183,7 @@ def _build_analysis_pack(
     for script in scripts:
         if not isinstance(script, dict):
             continue
-        if not _has_full_source(script) and script.get("path"):
+        if _is_missing_source(script) and script.get("path"):
             missing_sources.append(script.get("path"))
             if len(missing_sources) >= CODEX_PACK_MAX_ITEMS:
                 break
@@ -1254,6 +1305,50 @@ def _compute_context_delta(prev: Optional[Dict[str, Any]], curr: Dict[str, Any])
         "scriptsRemoved": _truncate_list(removed_scripts, CONTEXT_DELTA_MAX_ITEMS),
         "scriptsChanged": _truncate_list(changed_scripts, CONTEXT_DELTA_MAX_ITEMS),
     }
+
+def _merge_context_sources(prev: Optional[Dict[str, Any]], curr: Dict[str, Any]) -> Dict[str, Any]:
+    if not prev or not isinstance(curr, dict):
+        return curr
+    meta = curr.get("meta")
+    scope = meta.get("scope") if isinstance(meta, dict) else {}
+    if scope.get("mode") != "diff":
+        return curr
+
+    prev_scripts = {
+        s.get("path"): s
+        for s in (prev.get("scripts", []) or [])
+        if isinstance(s, dict) and s.get("path")
+    }
+    merged = 0
+    for script in curr.get("scripts", []) or []:
+        if not isinstance(script, dict):
+            continue
+        if script.get("source") is not None:
+            continue
+        path = script.get("path")
+        if not path:
+            continue
+        prev_script = prev_scripts.get(path)
+        if not prev_script:
+            continue
+        prev_source = prev_script.get("source")
+        if prev_source is None:
+            continue
+        curr_hash = script.get("sha1") or script.get("hash")
+        prev_hash = prev_script.get("sha1") or prev_script.get("hash")
+        if curr_hash and prev_hash and curr_hash != prev_hash:
+            continue
+        if not curr_hash and script.get("bytes") and prev_script.get("bytes") and script.get("bytes") != prev_script.get("bytes"):
+            continue
+        script["source"] = prev_source
+        script["sourceTruncated"] = False
+        if script.get("sourceOmittedReason") == "diff":
+            script.pop("sourceOmittedReason", None)
+        merged += 1
+
+    if merged and isinstance(meta, dict):
+        meta["mergedSources"] = merged
+    return curr
 
 def _get_context_delta(pid: int, sid: str, project_key: str) -> Optional[Dict[str, Any]]:
     return _context_deltas.get((int(pid), str(sid), str(project_key)))
@@ -1390,6 +1485,7 @@ def _build_focus_pack(context: Optional[Dict[str, Any]], delta: Optional[Dict[st
                 "previewTruncated": trimmed or source_truncated,
                 "sourceIsFull": (preview is not None and trimmed is False and source_truncated is False),
                 "sourceTruncated": source_truncated,
+                "sourceOmittedReason": s.get("sourceOmittedReason"),
                 "lineCount": line_count,
             })
             break
@@ -2256,6 +2352,11 @@ def health():
             "context_memory": "/context/memory",
             "context_events": "/context/events",
             "chunk_source": "/util/chunk_source",
+            "telemetry_report": "/telemetry/report",
+            "telemetry_request": "/telemetry/request",
+            "telemetry_latest": "/telemetry/latest",
+            "telemetry_summary": "/telemetry/summary",
+            "telemetry_reset": "/telemetry/reset",
             "codex_job": "/codex/job",
             "codex_status": "/codex/status",
             "codex_response": "/codex/response",
@@ -2296,10 +2397,13 @@ def discover():
 def status():
     with _cv:
         context_request: Any = False
+        telemetry_request: Any = False
         if _primary_place_id is not None and _primary_session_id is not None:
             key = (int(_primary_place_id), str(_primary_session_id))
             req = _context_export_requests.get(key)
             context_request = req if isinstance(req, dict) else bool(req)
+            t_req = _telemetry_export_requests.get(key)
+            telemetry_request = t_req if isinstance(t_req, dict) else bool(t_req)
         return {
             "ok": True,
             "serverTime": _now(),
@@ -2325,6 +2429,7 @@ def status():
                 "actionStats": _action_stats,
             },
             "contextRequest": context_request,
+            "telemetryRequest": telemetry_request,
             "queueLimit": MAX_QUEUE_SIZE,
         }
 
@@ -2843,6 +2948,7 @@ def context_export(
             payload["contextVersion"] = version
             context_id = _context_id(pid, sid, key[2])
             payload["contextId"] = context_id
+            payload = _merge_context_sources(prev, payload)
             _context_deltas[key] = _compute_context_delta(prev, payload)
             _context_latest[key] = payload
             _context_last_export_at[key] = _now()
@@ -3010,6 +3116,179 @@ def context_summary(
             "semanticSummary": (semantic.get("summary") if semantic else None),
         }
 
+@app.post("/telemetry/report")
+def telemetry_report(
+    inp: TelemetryReportIn,
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        requested = None
+        if inp.projectKey and inp.projectKey != "default":
+            requested = inp.projectKey
+        elif projectKey and projectKey != "default":
+            requested = projectKey
+        projectKey = _resolve_project_key_for_scope(pid, sid, requested)
+        key = (int(pid), str(sid), str(projectKey))
+        payload = inp.dict()
+        payload["projectKey"] = projectKey
+        version = _telemetry_versions.get(key, 0) + 1
+        _telemetry_versions[key] = version
+        _telemetry_latest[key] = payload
+        _telemetry_last_export_at[key] = _now()
+        _telemetry_export_requests.pop((int(pid), str(sid)), None)
+        return {
+            "ok": True,
+            "stored": True,
+            "projectKey": projectKey,
+            "telemetryId": _telemetry_id(pid, sid, projectKey),
+            "telemetryVersion": version,
+            "nodeCount": len(payload.get("nodes") or []),
+            "uiCount": len(payload.get("ui") or []),
+        }
+
+@app.post("/telemetry/request")
+def telemetry_request(
+    inp: TelemetryRequestIn = Body(default_factory=TelemetryRequestIn),
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        if _primary_place_id is None or _primary_session_id is None:
+            raise HTTPException(status_code=409, detail="NoPrimary")
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        _require_primary_scope(pid, sid)
+        requested_key = None
+        if inp.projectKey is not None:
+            requested_key = str(inp.projectKey)
+        elif projectKey and projectKey != "default":
+            requested_key = str(projectKey)
+        req_key = _resolve_project_key_for_scope(pid, sid, requested_key)
+        request_payload: Dict[str, Any] = {"requestedAt": _now()}
+        if requested_key:
+            request_payload["projectKey"] = requested_key
+        if isinstance(inp.roots, list):
+            request_payload["roots"] = [str(item) for item in inp.roots if str(item).strip() != ""]
+        if isinstance(inp.paths, list):
+            request_payload["paths"] = [str(item) for item in inp.paths if str(item).strip() != ""]
+        if inp.includeScene is not None:
+            request_payload["includeScene"] = bool(inp.includeScene)
+        if inp.includeGui is not None:
+            request_payload["includeGui"] = bool(inp.includeGui)
+        if inp.includeLighting is not None:
+            request_payload["includeLighting"] = bool(inp.includeLighting)
+        if inp.includeSelection is not None:
+            request_payload["includeSelection"] = bool(inp.includeSelection)
+        if inp.includeCamera is not None:
+            request_payload["includeCamera"] = bool(inp.includeCamera)
+        if inp.includeLogs is not None:
+            request_payload["includeLogs"] = bool(inp.includeLogs)
+        if inp.includeDiffs is not None:
+            request_payload["includeDiffs"] = bool(inp.includeDiffs)
+        if inp.includeAssets is not None:
+            request_payload["includeAssets"] = bool(inp.includeAssets)
+        if inp.includeTagIndex is not None:
+            request_payload["includeTagIndex"] = bool(inp.includeTagIndex)
+        if inp.includeUiQa is not None:
+            request_payload["includeUiQa"] = bool(inp.includeUiQa)
+        _telemetry_export_requests[(int(pid), str(sid))] = request_payload
+        return {
+            "ok": True,
+            "requested": True,
+            "projectKey": req_key,
+            "placeId": pid,
+            "studioSessionId": sid,
+            "request": request_payload,
+        }
+
+@app.get("/telemetry/latest")
+def telemetry_latest(
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        projectKey = _resolve_project_key_for_scope(pid, sid, projectKey if projectKey != "default" else None)
+        key = (int(pid), str(sid), str(projectKey))
+        data = _telemetry_latest.get(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="NoTelemetry")
+        return {
+            "ok": True,
+            "projectKey": projectKey,
+            "telemetryId": _telemetry_id(pid, sid, projectKey),
+            "telemetryVersion": _telemetry_versions.get(key, 0),
+            "telemetry": data,
+        }
+
+@app.get("/telemetry/summary")
+def telemetry_summary(
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        projectKey = _resolve_project_key_for_scope(pid, sid, projectKey if projectKey != "default" else None)
+        key = (int(pid), str(sid), str(projectKey))
+        data = _telemetry_latest.get(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="NoTelemetry")
+        meta = data.get("meta") if isinstance(data, dict) else None
+        if not isinstance(meta, dict):
+            meta = {}
+        return {
+            "ok": True,
+            "projectKey": projectKey,
+            "telemetryId": _telemetry_id(pid, sid, projectKey),
+            "telemetryVersion": _telemetry_versions.get(key, 0),
+            "placeId": int(pid),
+            "studioSessionId": str(sid),
+            "nodeCount": len(data.get("nodes") or []),
+            "uiCount": len(data.get("ui") or []),
+            "serviceCount": len(data.get("services") or []),
+            "logCount": len(data.get("logs") or []),
+            "diffCount": len(data.get("diffs") or []),
+            "assetCount": (data.get("assets") or {}).get("summary", {}).get("assets", 0)
+            if isinstance(data.get("assets"), dict)
+            else 0,
+            "tagCount": (data.get("tagIndex") or {}).get("summary", {}).get("tags", 0)
+            if isinstance(data.get("tagIndex"), dict)
+            else 0,
+            "attributeCount": (data.get("tagIndex") or {}).get("summary", {}).get("attributes", 0)
+            if isinstance(data.get("tagIndex"), dict)
+            else 0,
+            "uiIssueCount": (data.get("uiQa") or {}).get("counts", {}).get("issues", 0)
+            if isinstance(data.get("uiQa"), dict)
+            else 0,
+            "meta": meta,
+        }
+
+@app.post("/telemetry/reset")
+def telemetry_reset(
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        projectKey = _resolve_project_key_for_scope(pid, sid, projectKey if projectKey != "default" else None)
+        key = (int(pid), str(sid), str(projectKey))
+        existed = key in _telemetry_latest
+        if existed:
+            del _telemetry_latest[key]
+            _telemetry_versions.pop(key, None)
+            _telemetry_last_export_at.pop(key, None)
+        return {
+            "ok": True,
+            "cleared": existed,
+            "projectKey": projectKey,
+        }
+
 @app.get("/context/semantic")
 def context_semantic(
     projectKey: str = Query("default"),
@@ -3065,9 +3344,12 @@ def context_script(
         for s in scripts:
             if s.get("path") == path:
                 if not _has_full_source(s):
-                    if s.get("source") is None:
-                        raise HTTPException(status_code=404, detail="SourceMissing")
-                    raise HTTPException(status_code=404, detail="SourceTruncated")
+                    reason = s.get("sourceOmittedReason")
+                    if reason == "diff":
+                        raise HTTPException(status_code=404, detail="SourceOmitted")
+                    if s.get("sourceTruncated"):
+                        raise HTTPException(status_code=404, detail="SourceTruncated")
+                    raise HTTPException(status_code=404, detail="SourceMissing")
                 return {"ok": True, "projectKey": projectKey, "script": s}
 
         raise HTTPException(status_code=404, detail="ScriptNotFound")
@@ -3087,7 +3369,7 @@ def context_missing(
             raise HTTPException(status_code=404, detail="NoContext")
 
         scripts = data.get("scripts", []) or []
-        missing = [s.get("path") for s in scripts if not _has_full_source(s)]
+        missing = [s.get("path") for s in scripts if _is_missing_source(s)]
         return {"ok": True, "projectKey": projectKey, "missing": missing, "count": len(missing)}
 
 @app.get("/context/events")
@@ -3260,7 +3542,7 @@ def codex_job(inp: CodexJobIn):
         missing = []
         if context:
             scripts = context.get("scripts", []) or []
-            missing = [s.get("path") for s in scripts if not _has_full_source(s)]
+            missing = [s.get("path") for s in scripts if _is_missing_source(s)]
 
         script_count = len(context.get("scripts", []) or []) if context else 0
         scenario = _classify_prompt(inp.prompt, script_count)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 
-MCP_SERVER_INFO = {"name": "Persponify MCP", "version": "0.1.0"}
+MCP_SERVER_INFO = {"name": "Persponify MCP", "version": "0.1.1"}
 
 
 def tool_list() -> Dict[str, Any]:
