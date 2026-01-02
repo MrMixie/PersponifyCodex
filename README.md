@@ -107,8 +107,11 @@ permission scope. Recommended:
 - Context export: diff/full, scoped roots/paths, missing-source tracking, semantic tags/deps.
 - Context payload flags: `sourceTruncated` per script; summary fields `truncatedBySize`,
   `attributesIncluded`, `tagsIncluded`.
-- Telemetry (on-demand): scene/GUI/lighting/selection/camera snapshots, log stream,
-  diff feed, asset inventory, tag/attribute index, UI layout QA.
+- Telemetry (auto + on-demand): scene/GUI/lighting/selection/camera snapshots, log stream,
+  diff feed, asset inventory, tag/attribute index, UI layout QA (parent/relative rects,
+  anchor/UDim2 data, layout hints, normalized rects), live UI QA overlay + history.
+- Plugin UI: asset search + insert panel (server-backed catalog search).
+- Automation actions: insertAsset, tween, emitParticles, playSound, animationCreate/addKeyframe/preview/stop.
 - Codex packs: focus pack with `sourceIsFull` + `previewTruncated`, analysis pack
   (deps/hotspots), rollback snapshots, blueprint/refactor helpers.
 

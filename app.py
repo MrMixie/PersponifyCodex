@@ -38,6 +38,9 @@
 # Helpers:
 #   POST /util/chunk_source  (split large script source into chunks)
 #   POST /util/edit_script_tx (build editScript tx with chunks)
+# Asset search:
+#   GET  /assets/search
+#   GET  /assets/info
 # Note: keep the endpoint list above in sync with any new routes.
 
 from __future__ import annotations
@@ -51,6 +54,9 @@ import time
 import uuid
 import threading
 import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -98,6 +104,13 @@ class WaitIn(BaseModel):
     clientTag: Optional[str] = None
     timeoutSec: Optional[float] = None  # optional override
 
+class ReleaseIn(BaseModel):
+    leaseToken: str
+    fence: int
+    clientId: Optional[str] = None
+    studioSessionId: Optional[str] = None
+    reason: Optional[str] = None
+
 class TxEnvelope(BaseModel):
     protocolVersion: int = PROTOCOL_VERSION
     transactionId: str
@@ -114,7 +127,7 @@ class EnqueueIn(BaseModel):
 
 class ReceiptIn(BaseModel):
     leaseToken: str
-    fence: int
+    fence: Optional[int] = None
     claimToken: str
     transactionId: str
 
@@ -194,6 +207,28 @@ class TelemetryRequestIn(BaseModel):
     includeAssets: Optional[bool] = None
     includeTagIndex: Optional[bool] = None
     includeUiQa: Optional[bool] = None
+
+class CatalogSearchRequestIn(BaseModel):
+    projectKey: Optional[str] = None
+    query: Optional[str] = None
+    assetTypes: Optional[List[Any]] = None
+    bundleTypes: Optional[List[Any]] = None
+    category: Optional[str] = None
+    sortType: Optional[str] = None
+    sortAggregation: Optional[str] = None
+    salesType: Optional[str] = None
+    minPrice: Optional[int] = None
+    maxPrice: Optional[int] = None
+    maxResults: Optional[int] = None
+
+class CatalogSearchReportIn(BaseModel):
+    projectKey: str = "default"
+    query: Optional[str] = None
+    requestedAt: Optional[float] = None
+    requestId: Optional[str] = None
+    results: Optional[List[Dict[str, Any]]] = None
+    error: Optional[str] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 class ContextMemoryIn(BaseModel):
     projectKey: str = "default"
@@ -291,12 +326,24 @@ _context_last_export_at: Dict[Tuple[int, str, str], float] = {}
 _context_semantic: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
 _context_memory_mtime: Dict[Tuple[int, str, str], float] = {}
 _context_export_requests: Dict[Tuple[int, str], Dict[str, Any]] = {}
+_context_fingerprints: Dict[Tuple[int, str, str], str] = {}
 
 # Telemetry store
 _telemetry_latest: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
 _telemetry_versions: Dict[Tuple[int, str, str], int] = {}
 _telemetry_last_export_at: Dict[Tuple[int, str, str], float] = {}
+_telemetry_fingerprints: Dict[Tuple[int, str, str], str] = {}
 _telemetry_export_requests: Dict[Tuple[int, str], Dict[str, Any]] = {}
+_telemetry_history: Dict[Tuple[int, str, str], List[Dict[str, Any]]] = {}
+_catalog_search_requests: Dict[Tuple[int, str], Dict[str, Any]] = {}
+_catalog_latest: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+_catalog_versions: Dict[Tuple[int, str, str], int] = {}
+
+# Asset cache
+_asset_info_cache: Dict[int, Dict[str, Any]] = {}
+_asset_info_cache_exp: Dict[int, float] = {}
+_asset_search_cache: Dict[str, Dict[str, Any]] = {}
+_asset_search_cache_exp: Dict[str, float] = {}
 
 # Codex bridge state
 _codex_lock = threading.RLock()
@@ -339,6 +386,9 @@ CODEX_JOB_TTL_SEC = float(os.environ.get("PERSPONIFY_CODEX_JOB_TTL_SEC", "600"))
 CODEX_MAX_ACTIONS = int(os.environ.get("PERSPONIFY_CODEX_MAX_ACTIONS", "400"))
 CODEX_MAX_SOURCE_BYTES = int(os.environ.get("PERSPONIFY_CODEX_MAX_SOURCE_BYTES", "400000"))
 CONTEXT_DELTA_MAX_ITEMS = int(os.environ.get("PERSPONIFY_CONTEXT_DELTA_MAX_ITEMS", "200"))
+TELEMETRY_HISTORY_LIMIT = int(os.environ.get("PERSPONIFY_TELEMETRY_HISTORY_LIMIT", "20"))
+ASSET_INFO_CACHE_TTL_SEC = float(os.environ.get("PERSPONIFY_ASSET_INFO_CACHE_TTL_SEC", "600"))
+ASSET_SEARCH_CACHE_TTL_SEC = float(os.environ.get("PERSPONIFY_ASSET_SEARCH_CACHE_TTL_SEC", "60"))
 CODEX_ALLOWED_EDIT_MODES = {
     "replace",
     "append",
@@ -385,10 +435,15 @@ SQLITE_PATH = Path(
     os.environ.get("PERSPONIFY_SQLITE_PATH", str(CODEX_QUEUE_DIR / "codex_state.db"))
 ).resolve()
 SQLITE_TIMEOUT_SEC = float(os.environ.get("PERSPONIFY_SQLITE_TIMEOUT_SEC", "3"))
+ASSET_SEARCH_TIMEOUT_SEC = float(os.environ.get("PERSPONIFY_ASSET_SEARCH_TIMEOUT_SEC", "6"))
+ASSET_SEARCH_MAX_RESULTS = int(os.environ.get("PERSPONIFY_ASSET_SEARCH_MAX_RESULTS", "30"))
+ASSET_SEARCH_ALLOWED_LIMITS = {10, 28, 30, 50, 60, 100, 120}
+ASSET_SEARCH_USER_AGENT = os.environ.get("PERSPONIFY_ASSET_SEARCH_USER_AGENT", "PersponifyCodex/0.1")
 
 # Action catalog for Codex jobs (plugin supports these)
 SUPPORTED_ACTIONS = [
     "createInstance",
+    "insertAsset",
     "setProperty",
     "setProperties",
     "cloneInstance",
@@ -400,6 +455,13 @@ SUPPORTED_ACTIONS = [
     "setAttribute",
     "setAttributes",
     "editScript",
+    "tween",
+    "emitParticles",
+    "playSound",
+    "animationCreate",
+    "animationAddKeyframe",
+    "animationPreview",
+    "animationStop",
 ]
 
 # Companion config
@@ -425,6 +487,70 @@ def _reload_service() -> HeadlessService:
 
 def _now() -> float:
     return time.time()
+
+def _pick_asset_search_limit(requested: Optional[int]) -> int:
+    if requested is None:
+        return 10
+    try:
+        value = int(requested)
+    except (TypeError, ValueError):
+        return 10
+    if value in ASSET_SEARCH_ALLOWED_LIMITS:
+        return value
+    for candidate in sorted(ASSET_SEARCH_ALLOWED_LIMITS):
+        if value <= candidate:
+            return candidate
+    return max(ASSET_SEARCH_ALLOWED_LIMITS)
+
+def _http_get_json(url: str, timeout_sec: float) -> Tuple[bool, Any, str]:
+    req = urllib.request.Request(url, headers={"User-Agent": ASSET_SEARCH_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw = resp.read().decode("utf-8")
+        return True, json.loads(raw), ""
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8") if exc.fp else ""
+        return False, body or f"HTTP {exc.code}", f"HTTP {exc.code}"
+    except Exception as exc:  # pragma: no cover - network exceptions vary
+        return False, str(exc), "error"
+
+def _catalog_search_ids(query: str, limit: int, cursor: Optional[str]) -> Tuple[bool, Dict[str, Any], str]:
+    cache_key = f"{query}|{limit}|{cursor or ''}"
+    if ASSET_SEARCH_CACHE_TTL_SEC > 0:
+        exp = _asset_search_cache_exp.get(cache_key)
+        if exp and exp > _now():
+            cached = _asset_search_cache.get(cache_key)
+            if isinstance(cached, dict):
+                return True, cached, ""
+    params = {"keyword": query, "limit": str(limit)}
+    if cursor:
+        params["cursor"] = cursor
+    url = "https://catalog.roblox.com/v1/search/items?" + urllib.parse.urlencode(params)
+    ok, data, err = _http_get_json(url, ASSET_SEARCH_TIMEOUT_SEC)
+    if not ok:
+        return False, {"error": data}, err
+    if ASSET_SEARCH_CACHE_TTL_SEC > 0 and isinstance(data, dict):
+        _asset_search_cache[cache_key] = data
+        _asset_search_cache_exp[cache_key] = _now() + ASSET_SEARCH_CACHE_TTL_SEC
+    return True, data, ""
+
+def _marketplace_info(asset_id: int) -> Tuple[bool, Dict[str, Any], str]:
+    if ASSET_INFO_CACHE_TTL_SEC > 0:
+        exp = _asset_info_cache_exp.get(asset_id)
+        if exp and exp > _now():
+            cached = _asset_info_cache.get(asset_id)
+            if isinstance(cached, dict):
+                return True, cached, ""
+    url = "https://api.roblox.com/marketplace/productinfo?assetId=" + str(asset_id)
+    ok, data, err = _http_get_json(url, ASSET_SEARCH_TIMEOUT_SEC)
+    if not ok:
+        return False, {"error": data}, err
+    if isinstance(data, dict) and data.get("AssetId") is None:
+        data["AssetId"] = asset_id
+    if ASSET_INFO_CACHE_TTL_SEC > 0 and isinstance(data, dict):
+        _asset_info_cache[asset_id] = data
+        _asset_info_cache_exp[asset_id] = _now() + ASSET_INFO_CACHE_TTL_SEC
+    return True, data, ""
 
 CODEX_DENY_ACTIONS = _parse_csv_set(
     os.environ.get("PERSPONIFY_CODEX_DENY_ACTIONS"),
@@ -516,6 +642,30 @@ def _context_id(place_id: int, session_id: str, project_key: str) -> str:
 def _telemetry_id(place_id: int, session_id: str, project_key: str) -> str:
     safe_key = str(project_key or "default").replace("/", "_")
     return f"p_{int(place_id)}__s_{str(session_id)}__k_{safe_key}"
+
+def _telemetry_history_entry(payload: Dict[str, Any], version: int, fingerprint: Optional[str]) -> Dict[str, Any]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    if not isinstance(meta, dict):
+        meta = {}
+    counts = meta.get("counts") if isinstance(meta.get("counts"), dict) else {}
+    ui_qa = payload.get("uiQa") if isinstance(payload, dict) else None
+    ui_counts = ui_qa.get("counts") if isinstance(ui_qa, dict) else {}
+    return {
+        "version": version,
+        "receivedAt": _now(),
+        "fingerprint": fingerprint,
+        "nodeCount": counts.get("nodes"),
+        "uiCount": counts.get("ui"),
+        "logCount": counts.get("logs"),
+        "diffCount": counts.get("diffs"),
+        "assetCount": counts.get("assets"),
+        "uiIssueCount": ui_counts.get("issues"),
+        "meta": {
+            "include": meta.get("include"),
+            "truncated": meta.get("truncated"),
+            "scope": meta.get("scope"),
+        },
+    }
 
 def _context_file_path(context_id: str) -> Path:
     return CODEX_CONTEXT_DIR / f"context_{context_id}.json"
@@ -1688,6 +1838,22 @@ def _normalize_action(action: Dict[str, Any]) -> Dict[str, Any]:
             out.setdefault("mode", "add")
         if lower == "removetags":
             out.setdefault("mode", "remove")
+    elif lower in {"insertasset", "loadasset", "insert"}:
+        out["type"] = "insertAsset"
+    elif lower in {"tween", "tweeninstance"}:
+        out["type"] = "tween"
+    elif lower in {"emitparticles", "emit"}:
+        out["type"] = "emitParticles"
+    elif lower in {"playsound", "playaudio"}:
+        out["type"] = "playSound"
+    elif lower in {"createanimation", "animationcreate"}:
+        out["type"] = "animationCreate"
+    elif lower in {"addkeyframe", "animationaddkeyframe"}:
+        out["type"] = "animationAddKeyframe"
+    elif lower in {"previewanimation", "animationpreview"}:
+        out["type"] = "animationPreview"
+    elif lower in {"stopanimation", "animationstop"}:
+        out["type"] = "animationStop"
     elif lower in {"setproperties"}:
         out["type"] = "setProperties"
     elif lower in {"setproperty"}:
@@ -1715,6 +1881,8 @@ def _normalize_action(action: Dict[str, Any]) -> Dict[str, Any]:
         "cloneInstance",
         "clearChildren",
         "setTags",
+        "tween",
+        "emitParticles",
     }:
         out.setdefault("path", out.get("targetPath") or out.get("target"))
 
@@ -1723,6 +1891,10 @@ def _normalize_action(action: Dict[str, Any]) -> Dict[str, Any]:
         out.setdefault("className", out.get("class") or out.get("class_name"))
         if "source" not in out:
             out["source"] = out.get("content") or out.get("text") or out.get("value")
+
+    if action_type == "insertAsset":
+        out.setdefault("parentPath", out.get("parent") or out.get("parent_path"))
+        out.setdefault("assetId", out.get("id") or out.get("asset") or out.get("assetID"))
 
     if action_type == "setProperty":
         out.setdefault("property", out.get("key"))
@@ -1752,6 +1924,21 @@ def _normalize_action(action: Dict[str, Any]) -> Dict[str, Any]:
         out.setdefault("mode", "replace")
         if "source" not in out and "chunks" not in out:
             out["source"] = out.get("content") or out.get("text") or out.get("value")
+
+    if action_type == "playSound":
+        out.setdefault("path", out.get("targetPath") or out.get("target"))
+        out.setdefault("soundId", out.get("id") or out.get("sound") or out.get("assetId"))
+
+    if action_type == "animationCreate":
+        out.setdefault("parentPath", out.get("parent") or out.get("parent_path"))
+        out.setdefault("name", out.get("animationName") or out.get("sequenceName"))
+
+    if action_type == "animationAddKeyframe":
+        out.setdefault("path", out.get("sequencePath") or out.get("targetPath") or out.get("target"))
+
+    if action_type == "animationPreview":
+        out.setdefault("rigPath", out.get("rig") or out.get("targetPath"))
+        out.setdefault("sequencePath", out.get("path") or out.get("sequence"))
 
     return out
 
@@ -1809,6 +1996,9 @@ def _validate_codex_actions(actions: List[Dict[str, Any]], context: Optional[Dic
             "cloneInstance",
             "clearChildren",
             "setTags",
+            "tween",
+            "emitParticles",
+            "animationAddKeyframe",
         }:
             if not isinstance(path, str) or not path:
                 errors.append(f"action {idx}: missing path")
@@ -1838,6 +2028,18 @@ def _validate_codex_actions(actions: List[Dict[str, Any]], context: Optional[Dic
             if isinstance(source, str) and len(source.encode("utf-8")) > CODEX_MAX_SOURCE_BYTES:
                 errors.append(f"action {idx}: source too large")
 
+        if action_type == "insertAsset":
+            parent_path = action.get("parentPath")
+            asset_id = action.get("assetId")
+            if not isinstance(parent_path, str) or not parent_path:
+                errors.append(f"action {idx}: missing parentPath")
+            if not asset_id:
+                errors.append(f"action {idx}: missing assetId")
+            if isinstance(parent_path, str) and not parent_path.startswith("game/"):
+                errors.append(f"action {idx}: invalid parentPath {parent_path}")
+            if isinstance(parent_path, str) and not path_under(parent_path, allowed_roots):
+                errors.append(f"action {idx}: parentPath outside allowed roots")
+
         if action_type == "cloneInstance":
             parent_path = action.get("parentPath")
             if parent_path is not None and not isinstance(parent_path, str):
@@ -1855,6 +2057,68 @@ def _validate_codex_actions(actions: List[Dict[str, Any]], context: Optional[Dic
             remove = action.get("remove")
             if tags is None and add is None and remove is None:
                 errors.append(f"action {idx}: missing tags")
+
+        if action_type == "tween":
+            props = action.get("properties")
+            if not isinstance(props, dict):
+                errors.append(f"action {idx}: missing properties")
+
+        if action_type == "emitParticles":
+            count = action.get("count") or action.get("emit")
+            if count is not None:
+                try:
+                    int(count)
+                except (TypeError, ValueError):
+                    errors.append(f"action {idx}: invalid emit count")
+
+        if action_type == "playSound":
+            sound_id = action.get("soundId") or action.get("assetId")
+            if not action.get("path"):
+                parent_path = action.get("parentPath")
+                if not sound_id:
+                    errors.append(f"action {idx}: missing soundId")
+                if not isinstance(parent_path, str) or not parent_path:
+                    errors.append(f"action {idx}: missing parentPath")
+                elif not parent_path.startswith("game/"):
+                    errors.append(f"action {idx}: invalid parentPath {parent_path}")
+                elif not path_under(parent_path, allowed_roots):
+                    errors.append(f"action {idx}: parentPath outside allowed roots")
+
+        if action_type == "animationCreate":
+            parent_path = action.get("parentPath")
+            if not isinstance(parent_path, str) or not parent_path:
+                errors.append(f"action {idx}: missing parentPath")
+            elif not parent_path.startswith("game/"):
+                errors.append(f"action {idx}: invalid parentPath {parent_path}")
+            elif not path_under(parent_path, allowed_roots):
+                errors.append(f"action {idx}: parentPath outside allowed roots")
+
+        if action_type == "animationPreview":
+            rig_path = action.get("rigPath")
+            sequence_path = action.get("sequencePath")
+            sequence_data = action.get("sequence")
+            if not isinstance(rig_path, str) or not rig_path:
+                errors.append(f"action {idx}: missing rigPath")
+            elif not rig_path.startswith("game/"):
+                errors.append(f"action {idx}: invalid rigPath {rig_path}")
+            elif not path_under(rig_path, allowed_roots):
+                errors.append(f"action {idx}: rigPath outside allowed roots")
+            if sequence_path:
+                if not isinstance(sequence_path, str) or not sequence_path.startswith("game/"):
+                    errors.append(f"action {idx}: invalid sequencePath {sequence_path}")
+                elif not path_under(sequence_path, allowed_roots):
+                    errors.append(f"action {idx}: sequencePath outside allowed roots")
+            elif not isinstance(sequence_data, dict):
+                errors.append(f"action {idx}: missing sequencePath/sequence")
+
+        if action_type == "animationStop":
+            rig_path = action.get("rigPath")
+            if not isinstance(rig_path, str) or not rig_path:
+                errors.append(f"action {idx}: missing rigPath")
+            elif not rig_path.startswith("game/"):
+                errors.append(f"action {idx}: invalid rigPath {rig_path}")
+            elif not path_under(rig_path, allowed_roots):
+                errors.append(f"action {idx}: rigPath outside allowed roots")
 
         if action_type == "setProperty":
             prop = action.get("property")
@@ -2329,6 +2593,7 @@ def health():
             "discover": "/discover",
             "status": "/status",
             "register": "/register",
+            "release": "/release",
             "sync": "/sync",
             "wait": "/wait",
             "receipt": "/receipt",
@@ -2356,7 +2621,14 @@ def health():
             "telemetry_request": "/telemetry/request",
             "telemetry_latest": "/telemetry/latest",
             "telemetry_summary": "/telemetry/summary",
+            "telemetry_history": "/telemetry/history",
+            "telemetry_ui_qa_report": "/telemetry/ui_qa_report",
             "telemetry_reset": "/telemetry/reset",
+            "catalog_request": "/catalog/request",
+            "catalog_report": "/catalog/report",
+            "catalog_latest": "/catalog/latest",
+            "assets_search": "/assets/search",
+            "assets_info": "/assets/info",
             "codex_job": "/codex/job",
             "codex_status": "/codex/status",
             "codex_response": "/codex/response",
@@ -2398,12 +2670,15 @@ def status():
     with _cv:
         context_request: Any = False
         telemetry_request: Any = False
+        catalog_request: Any = False
         if _primary_place_id is not None and _primary_session_id is not None:
             key = (int(_primary_place_id), str(_primary_session_id))
             req = _context_export_requests.get(key)
             context_request = req if isinstance(req, dict) else bool(req)
             t_req = _telemetry_export_requests.get(key)
             telemetry_request = t_req if isinstance(t_req, dict) else bool(t_req)
+            c_req = _catalog_search_requests.get(key)
+            catalog_request = c_req if isinstance(c_req, dict) else bool(c_req)
         return {
             "ok": True,
             "serverTime": _now(),
@@ -2430,6 +2705,7 @@ def status():
             },
             "contextRequest": context_request,
             "telemetryRequest": telemetry_request,
+            "catalogRequest": catalog_request,
             "queueLimit": MAX_QUEUE_SIZE,
         }
 
@@ -2557,6 +2833,19 @@ def register(inp: RegisterIn):
             return RegisterOut(leaseToken=_primary_lease_token, fence=_fence, serverSeq=_seq)
 
         raise HTTPException(status_code=409, detail="Primary already registered")
+
+@app.post("/release")
+def release(inp: ReleaseIn):
+    global _primary_lease_token, _primary_session_id, _primary_client_id, _primary_place_id, _last_heartbeat
+    with _cv:
+        fence = inp.fence if inp.fence is not None else _fence
+        if inp.leaseToken != _primary_lease_token or fence != _fence:
+            raise HTTPException(status_code=409, detail="FenceMismatch")
+        _reset_primary_unlocked()
+        _last_heartbeat = 0.0
+        _save_queue_state_unlocked()
+        _cv.notify_all()
+    return {"ok": True}
 
 @app.get("/sync", response_model=SyncOut)
 def sync(
@@ -2876,6 +3165,9 @@ def debug_reset():
         _claims = {}
         _last_wait = {}
         _last_receipt = {}
+        _catalog_search_requests.clear()
+        _catalog_latest.clear()
+        _catalog_versions.clear()
         _fault = {"mode": None}
         _save_queue_state_unlocked()
         _cv.notify_all()
@@ -2943,8 +3235,28 @@ def context_export(
             payload = inp.model_dump()
             payload["serverReceivedAt"] = _now()
             prev = _context_latest.get(key)
+            meta = payload.get("meta") if isinstance(payload, dict) else None
+            incoming_fp = meta.get("fingerprint") if isinstance(meta, dict) else None
+            last_fp = _context_fingerprints.get(key)
+            changed = True
+            if incoming_fp and last_fp == incoming_fp:
+                changed = False
+
+            if not changed:
+                _context_last_export_at[key] = _now()
+                return {
+                    "ok": True,
+                    "stored": False,
+                    "unchanged": True,
+                    "projectKey": key[2],
+                    "contextId": _context_id(pid, sid, key[2]),
+                    "contextVersion": _context_versions.get(key, 0),
+                }
+
             version = _context_versions.get(key, 0) + 1
             _context_versions[key] = version
+            if incoming_fp:
+                _context_fingerprints[key] = incoming_fp
             payload["contextVersion"] = version
             context_id = _context_id(pid, sid, key[2])
             payload["contextId"] = context_id
@@ -2994,6 +3306,7 @@ def context_export(
             return {
                 "ok": True,
                 "stored": True,
+                "changed": True,
                 "projectKey": key[2],
                 "contextId": context_id,
                 "contextVersion": version,
@@ -3134,14 +3447,33 @@ def telemetry_report(
         key = (int(pid), str(sid), str(projectKey))
         payload = inp.dict()
         payload["projectKey"] = projectKey
-        version = _telemetry_versions.get(key, 0) + 1
-        _telemetry_versions[key] = version
+        incoming_fp = None
+        meta = payload.get("meta")
+        if isinstance(meta, dict):
+            incoming_fp = meta.get("fingerprint")
+        last_fp = _telemetry_fingerprints.get(key)
+        version = _telemetry_versions.get(key, 0)
+        has_logs = bool(payload.get("logs"))
+        has_diffs = bool(payload.get("diffs"))
+        changed = True
+        if incoming_fp and last_fp == incoming_fp and not (has_logs or has_diffs):
+            changed = False
+        if changed:
+            version += 1
+            _telemetry_versions[key] = version
+            if incoming_fp:
+                _telemetry_fingerprints[key] = incoming_fp
+            history = _telemetry_history.setdefault(key, [])
+            history.append(_telemetry_history_entry(payload, version, incoming_fp))
+            if TELEMETRY_HISTORY_LIMIT > 0 and len(history) > TELEMETRY_HISTORY_LIMIT:
+                _telemetry_history[key] = history[-TELEMETRY_HISTORY_LIMIT:]
         _telemetry_latest[key] = payload
         _telemetry_last_export_at[key] = _now()
         _telemetry_export_requests.pop((int(pid), str(sid)), None)
         return {
             "ok": True,
             "stored": True,
+            "changed": changed,
             "projectKey": projectKey,
             "telemetryId": _telemetry_id(pid, sid, projectKey),
             "telemetryVersion": version,
@@ -3241,6 +3573,8 @@ def telemetry_summary(
         meta = data.get("meta") if isinstance(data, dict) else None
         if not isinstance(meta, dict):
             meta = {}
+        last_at = _telemetry_last_export_at.get(key)
+        age = (_now() - last_at) if last_at else None
         return {
             "ok": True,
             "projectKey": projectKey,
@@ -3248,6 +3582,8 @@ def telemetry_summary(
             "telemetryVersion": _telemetry_versions.get(key, 0),
             "placeId": int(pid),
             "studioSessionId": str(sid),
+            "telemetryLastExportAt": last_at,
+            "telemetryAgeSec": age,
             "nodeCount": len(data.get("nodes") or []),
             "uiCount": len(data.get("ui") or []),
             "serviceCount": len(data.get("services") or []),
@@ -3268,6 +3604,67 @@ def telemetry_summary(
             "meta": meta,
         }
 
+@app.get("/telemetry/history")
+def telemetry_history(
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=200),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        projectKey = _resolve_project_key_for_scope(pid, sid, projectKey if projectKey != "default" else None)
+        key = (int(pid), str(sid), str(projectKey))
+        history = _telemetry_history.get(key)
+        if history is None:
+            raise HTTPException(status_code=404, detail="NoTelemetry")
+        if TELEMETRY_HISTORY_LIMIT > 0:
+            limit = min(limit, TELEMETRY_HISTORY_LIMIT)
+        return {
+            "ok": True,
+            "projectKey": projectKey,
+            "telemetryId": _telemetry_id(pid, sid, projectKey),
+            "telemetryVersion": _telemetry_versions.get(key, 0),
+            "history": history[-limit:],
+        }
+
+@app.get("/telemetry/ui_qa_report")
+def telemetry_ui_qa_report(
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+    maxIssues: int = Query(50, ge=1, le=500),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        projectKey = _resolve_project_key_for_scope(pid, sid, projectKey if projectKey != "default" else None)
+        key = (int(pid), str(sid), str(projectKey))
+        data = _telemetry_latest.get(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="NoTelemetry")
+        ui_qa = data.get("uiQa")
+        if not isinstance(ui_qa, dict):
+            raise HTTPException(status_code=404, detail="NoUiQa")
+        issues = ui_qa.get("issues") or []
+        if isinstance(issues, list):
+            issues = sorted(
+                issues,
+                key=lambda item: float(item.get("severity") or 0),
+                reverse=True,
+            )
+            issues = issues[:maxIssues]
+        else:
+            issues = []
+        return {
+            "ok": True,
+            "projectKey": projectKey,
+            "telemetryId": _telemetry_id(pid, sid, projectKey),
+            "telemetryVersion": _telemetry_versions.get(key, 0),
+            "counts": ui_qa.get("counts"),
+            "screen": ui_qa.get("screen"),
+            "issues": issues,
+        }
+
 @app.post("/telemetry/reset")
 def telemetry_reset(
     projectKey: str = Query("default"),
@@ -3283,11 +3680,174 @@ def telemetry_reset(
             del _telemetry_latest[key]
             _telemetry_versions.pop(key, None)
             _telemetry_last_export_at.pop(key, None)
+            _telemetry_fingerprints.pop(key, None)
+            _telemetry_history.pop(key, None)
         return {
             "ok": True,
             "cleared": existed,
             "projectKey": projectKey,
         }
+
+@app.post("/catalog/request")
+def catalog_request(
+    inp: CatalogSearchRequestIn = Body(default_factory=CatalogSearchRequestIn),
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        if _primary_place_id is None or _primary_session_id is None:
+            raise HTTPException(status_code=409, detail="NoPrimary")
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        _require_primary_scope(pid, sid)
+        requested_key = None
+        if inp.projectKey is not None:
+            requested_key = str(inp.projectKey)
+        elif projectKey and projectKey != "default":
+            requested_key = str(projectKey)
+        req_key = _resolve_project_key_for_scope(pid, sid, requested_key)
+        request_payload: Dict[str, Any] = {
+            "requestedAt": _now(),
+            "requestId": str(uuid.uuid4()),
+        }
+        if requested_key:
+            request_payload["projectKey"] = requested_key
+        if inp.query is not None:
+            request_payload["query"] = str(inp.query)
+        if isinstance(inp.assetTypes, list):
+            request_payload["assetTypes"] = inp.assetTypes
+        if isinstance(inp.bundleTypes, list):
+            request_payload["bundleTypes"] = inp.bundleTypes
+        if inp.category is not None:
+            request_payload["category"] = str(inp.category)
+        if inp.sortType is not None:
+            request_payload["sortType"] = str(inp.sortType)
+        if inp.sortAggregation is not None:
+            request_payload["sortAggregation"] = str(inp.sortAggregation)
+        if inp.salesType is not None:
+            request_payload["salesType"] = str(inp.salesType)
+        if inp.minPrice is not None:
+            request_payload["minPrice"] = int(inp.minPrice)
+        if inp.maxPrice is not None:
+            request_payload["maxPrice"] = int(inp.maxPrice)
+        if inp.maxResults is not None:
+            request_payload["maxResults"] = int(inp.maxResults)
+        _catalog_search_requests[(int(pid), str(sid))] = request_payload
+        return {
+            "ok": True,
+            "requested": True,
+            "projectKey": req_key,
+            "placeId": pid,
+            "studioSessionId": sid,
+            "request": request_payload,
+        }
+
+@app.post("/catalog/report")
+def catalog_report(
+    inp: CatalogSearchReportIn,
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        requested = None
+        if inp.projectKey and inp.projectKey != "default":
+            requested = inp.projectKey
+        elif projectKey and projectKey != "default":
+            requested = projectKey
+        projectKey = _resolve_project_key_for_scope(pid, sid, requested)
+        key = (int(pid), str(sid), str(projectKey))
+        payload = inp.dict()
+        payload["projectKey"] = projectKey
+        version = _catalog_versions.get(key, 0) + 1
+        _catalog_versions[key] = version
+        _catalog_latest[key] = payload
+        _catalog_search_requests.pop((int(pid), str(sid)), None)
+        return {
+            "ok": True,
+            "stored": True,
+            "projectKey": projectKey,
+            "catalogVersion": version,
+            "resultCount": len(payload.get("results") or []),
+        }
+
+@app.get("/catalog/latest")
+def catalog_latest(
+    projectKey: str = Query("default"),
+    placeId: Optional[int] = Query(None),
+    studioSessionId: Optional[str] = Query(None),
+):
+    with _cv:
+        pid, sid = _resolve_scope_auto(placeId, studioSessionId)
+        projectKey = _resolve_project_key_for_scope(pid, sid, projectKey if projectKey != "default" else None)
+        key = (int(pid), str(sid), str(projectKey))
+        data = _catalog_latest.get(key)
+        if not data:
+            raise HTTPException(status_code=404, detail="NoCatalog")
+        return {
+            "ok": True,
+            "projectKey": projectKey,
+            "catalogVersion": _catalog_versions.get(key, 0),
+            "catalog": data,
+        }
+
+@app.get("/assets/search")
+def assets_search(
+    query: str = Query(..., min_length=1),
+    limit: int = Query(10),
+    cursor: Optional[str] = Query(None),
+):
+    limit = _pick_asset_search_limit(limit)
+    ok, data, err = _catalog_search_ids(query, limit, cursor)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"catalog search failed: {err}")
+    ids: List[int] = []
+    for item in data.get("data", []) or []:
+        if item.get("itemType") == "Asset" and "id" in item:
+            try:
+                ids.append(int(item["id"]))
+            except (TypeError, ValueError):
+                continue
+    results = []
+    max_results = min(len(ids), ASSET_SEARCH_MAX_RESULTS)
+    for asset_id in ids[:max_results]:
+        ok_info, info, _ = _marketplace_info(asset_id)
+        if not ok_info:
+            results.append({"assetId": asset_id})
+            continue
+        creator = info.get("Creator") or {}
+        results.append({
+            "assetId": info.get("AssetId", asset_id),
+            "name": info.get("Name"),
+            "description": info.get("Description"),
+            "assetTypeId": info.get("AssetTypeId"),
+            "creator": {
+                "id": creator.get("Id"),
+                "name": creator.get("Name"),
+                "type": creator.get("CreatorType"),
+            },
+            "price": info.get("PriceInRobux"),
+            "isForSale": info.get("IsForSale"),
+            "isPublicDomain": info.get("IsPublicDomain"),
+            "iconImageId": info.get("IconImageAssetId"),
+        })
+    return {
+        "ok": True,
+        "query": query,
+        "limit": limit,
+        "previousCursor": data.get("previousPageCursor"),
+        "nextCursor": data.get("nextPageCursor"),
+        "results": results,
+        "resultCount": len(results),
+    }
+
+@app.get("/assets/info")
+def assets_info(assetId: int = Query(..., ge=1)):
+    ok, info, err = _marketplace_info(assetId)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"asset info failed: {err}")
+    return {"ok": True, "asset": info}
 
 @app.get("/context/semantic")
 def context_semantic(
@@ -3453,6 +4013,7 @@ def context_reset(
             _context_last_export_at.pop(key, None)
             _context_semantic.pop(key, None)
             _context_memory_mtime.pop(key, None)
+            _context_fingerprints.pop(key, None)
             try:
                 _context_file_path(_context_id(pid, sid, projectKey)).unlink()
             except Exception:

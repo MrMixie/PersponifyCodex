@@ -58,9 +58,13 @@ Telemetry (live scene/UI)
 - Request telemetry with `/telemetry/request` (supports `roots`/`paths` plus include flags).
 - Include flags: `includeScene`, `includeGui`, `includeLighting`, `includeSelection`, `includeCamera`,
   `includeLogs`, `includeDiffs`, `includeAssets`, `includeTagIndex`, `includeUiQa`.
-- After requesting, poll `/telemetry/summary` or `/telemetry/latest`; `/status` exposes `telemetryRequest`.
-- Use `includeUiQa` to find UI overflow/off-screen elements, hitbox sizes, and safe‑zone issues.
+- After requesting, poll `/telemetry/summary` or `/telemetry/latest`; `/telemetry/history` gives recent snapshots; `/status` exposes `telemetryRequest`.
+- Use `includeUiQa` to find UI overflow/off-screen elements, hitbox sizes, safe‑zone issues, and overlap ratios/areas.
+- UI telemetry now includes absolute + parent/relative rects, anchor/UDim2 data, layout hints (UIPadding/UIListLayout/UIGridLayout/UIPageLayout, size/aspect constraints), and normalized rects; diff feed includes AbsolutePosition/AbsoluteSize changes for live layout shifts.
 - Use `includeAssets` + `includeTagIndex` to inventory asset usage and tag/attribute coverage.
+- Telemetry auto-runs on an interval; use `/telemetry/summary` to confirm it is streaming (auto can be gated to send only when GUI is present).
+- UI QA overlay renders issue boxes + safe rect in Studio; use it for layout debugging.
+- Overlay toggles live in Config (`UiQaOverlayEnabled`, `UiQaOverlayShowAll`); prefer overlay over guesswork.
 - Keep telemetry scoped and targeted to avoid oversized payloads.
 
 Planning + checklist behavior
@@ -74,6 +78,8 @@ Apply behavior
 - Never invent objects or paths; use context or ask.
 - Keep diffs minimal; do not add “nice-to-have” extras unless requested.
 - For editScript, prefer `replaceRange` / `insertBefore` / `insertAfter` over full replace.
+- Use specialized actions when possible: `insertAsset`, `tween`, `emitParticles`, `playSound`,
+  `animationCreate`, `animationAddKeyframe`, `animationPreview`, `animationStop`.
 - When editing scripts, include `expectedHash` (from focus pack `fingerprint`/`sha1`) to prevent stale writes.
 - If `expectedHash` is missing or mismatched, request a full resync before retrying.
 - After applying, report what changed in Studio and where (paths).

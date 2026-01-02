@@ -8,8 +8,8 @@ Purpose:
 - Provide a safe, redacted template.
 
 Fields (high level):
-- meta: buildId, placeId, gameId, pluginVersion, caps, and truncation flags
-  (truncatedBySize, attributesIncluded, tagsIncluded).
+- meta: buildId, placeId, gameId, pluginVersion, caps, fingerprint, and truncation flags
+  (truncatedBySize, totalCapHit, omittedByDiff/Size/Total, attributesIncluded, tagsIncluded).
 - tree: instance paths + class names.
 - scripts: path metadata; source may be omitted or truncated.
 
@@ -21,7 +21,12 @@ placeId: 123
 gameId: 456
 maxScriptChars: 120000
 maxTotalChars: 400000
+fingerprint: fnv1a32:...
 truncatedBySize: false
+totalCapHit: false
+omittedByDiff: 0
+omittedBySize: 0
+omittedByTotal: 0
 attributesIncluded: true
 tagsIncluded: true
 
