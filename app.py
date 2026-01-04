@@ -534,6 +534,28 @@ def _catalog_search_ids(query: str, limit: int, cursor: Optional[str]) -> Tuple[
         _asset_search_cache_exp[cache_key] = _now() + ASSET_SEARCH_CACHE_TTL_SEC
     return True, data, ""
 
+ASSET_TYPE_NAME_TO_ID = {
+    "model": 10,
+    "models": 10,
+    "map": 10,
+    "maps": 10,
+    "place": 9,
+    "places": 9,
+    "mesh": 4,
+    "meshes": 4,
+    "audio": 3,
+    "sound": 3,
+    "sounds": 3,
+    "decal": 13,
+    "decals": 13,
+    "image": 1,
+    "images": 1,
+    "animation": 24,
+    "animations": 24,
+    "package": 32,
+    "packages": 32,
+}
+
 def _marketplace_info(asset_id: int) -> Tuple[bool, Dict[str, Any], str]:
     if ASSET_INFO_CACHE_TTL_SEC > 0:
         exp = _asset_info_cache_exp.get(asset_id)
@@ -3797,8 +3819,28 @@ def assets_search(
     query: str = Query(..., min_length=1),
     limit: int = Query(10),
     cursor: Optional[str] = Query(None),
+    assetTypeIds: Optional[str] = Query(None),
+    assetTypes: Optional[str] = Query(None),
 ):
     limit = _pick_asset_search_limit(limit)
+    allowed_ids = set()
+    if assetTypeIds:
+        for part in assetTypeIds.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                allowed_ids.add(int(part))
+            except ValueError:
+                continue
+    if assetTypes:
+        for part in assetTypes.split(","):
+            key = part.strip().lower()
+            if not key:
+                continue
+            mapped = ASSET_TYPE_NAME_TO_ID.get(key)
+            if mapped:
+                allowed_ids.add(int(mapped))
     ok, data, err = _catalog_search_ids(query, limit, cursor)
     if not ok:
         raise HTTPException(status_code=502, detail=f"catalog search failed: {err}")
@@ -3814,14 +3856,18 @@ def assets_search(
     for asset_id in ids[:max_results]:
         ok_info, info, _ = _marketplace_info(asset_id)
         if not ok_info:
-            results.append({"assetId": asset_id})
+            if not allowed_ids:
+                results.append({"assetId": asset_id})
             continue
         creator = info.get("Creator") or {}
+        asset_type_id = info.get("AssetTypeId")
+        if allowed_ids and asset_type_id not in allowed_ids:
+            continue
         results.append({
             "assetId": info.get("AssetId", asset_id),
             "name": info.get("Name"),
             "description": info.get("Description"),
-            "assetTypeId": info.get("AssetTypeId"),
+            "assetTypeId": asset_type_id,
             "creator": {
                 "id": creator.get("Id"),
                 "name": creator.get("Name"),
